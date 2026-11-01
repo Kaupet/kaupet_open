@@ -26,7 +26,7 @@ Eksempler på uakseptabel atferd:
 
 ## Håndheving
 
-Eksempler på uakseptabel atferd kan rapporteres til prosjektledelsen på **andreas@happypixel.no**. Alle klager vil bli gjennomgått og undersøkt raskt og rettferdig.
+Eksempler på uakseptabel atferd kan rapporteres til prosjektledelsen på **open@kaupet.no**. Alle klager vil bli gjennomgått og undersøkt raskt og rettferdig.
 
 Prosjektledelsen er forpliktet til å respektere personvernet og sikkerheten til de som rapporterer hendelser.
 
