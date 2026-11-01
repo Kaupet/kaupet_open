@@ -5,7 +5,7 @@ pull request med detaljer**. Meld den privat.
 
 ## Rapportere en sårbarhet
 
-**Mottaker:** vedlikeholderen i Happy Pixel AS — **varsle@kaupet.no**
+**Mottaker:** open@kaupet.no
 
 **Reservekontakt:** [privat rapportering via GitHub Security
 Advisories](https://github.com/Kaupet/kaupet_open/security/advisories/new).
