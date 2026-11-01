@@ -1,0 +1,52 @@
+import "./lib/zod-config";
+import "./lib/vehicle/register";
+import { QueryClient } from "@tanstack/react-query";
+import { createRouter } from "@tanstack/react-router";
+import { getGlobalStartContext } from "@tanstack/start-client-core";
+import { routeTree } from "./routeTree.gen";
+import type { InterpretedCriterion } from "@/features/listing-search/resolve-text-to-filters";
+
+export const getRouter = () => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 60_000, // 1 min — avoid refetching on every navigation
+        gcTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+        retry: 1,
+      },
+    },
+  });
+
+  const cspNonce = getGlobalStartContext()?.cspNonce;
+
+  const router = createRouter({
+    routeTree,
+    context: { queryClient },
+    scrollRestoration: true,
+    // Preloader ruter på hover/touch («intent»). StaleTime kan da ikke være 0
+    // — det ville fått hvert eneste hover til å refetche loader-dataen.
+    // Delay på 150 ms (mot standardens 50) fordi et resultatgrid har 20+
+    // lenker: uten den ville et musesveip over rutenettet fyrt av én
+    // loader-forespørsel per kort man passerte.
+    defaultPreload: "intent",
+    defaultPreloadDelay: 150,
+    defaultPreloadStaleTime: 30_000,
+  });
+
+  if (typeof window === "undefined" && typeof cspNonce === "string") {
+    router.options.ssr = { ...router.options.ssr, nonce: cspNonce };
+  }
+
+  return router;
+};
+
+// Router-state som sendes med navigasjoner (location.state).
+declare module "@tanstack/react-router" {
+  interface HistoryState {
+    /** Satt av annonselenker i søkeresultatet/kartet — viser «Tilbake til søket». */
+    fromSearch?: boolean;
+    /** Tolkningen av søketeksten, så /annonser kan vise «Tolket som». */
+    interpretedCriteria?: InterpretedCriterion[];
+  }
+}

@@ -1,0 +1,22 @@
+# Genererte filer, byggoutput og lokale verktøydata.
+node_modules/
+dist/
+dist-ssr/
+.output/
+.vinxi/
+.tanstack/
+.nitro/
+.wrangler/
+coverage/
+playwright-report/
+test-results/
+src/routeTree.gen.ts
+src/integrations/supabase/types.ts
+android/.gradle/
+android/build/
+android/app/build/
+android/app/src/main/assets/public/
+ios/App/Pods/
+ios/App/build/
+ios/App/App/public/
+.claude/worktrees/

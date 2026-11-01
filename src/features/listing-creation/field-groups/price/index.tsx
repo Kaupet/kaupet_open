@@ -1,0 +1,342 @@
+import { useEffect, useEffectEvent, useState } from "react";
+import { Search } from "lucide-react";
+
+import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+
+import { digitsOnlyClamped, formatThousands } from "@/lib/number-input";
+import { displayPriceNok, formatNok, formatNokNumber, priceRange } from "@/lib/format";
+
+import type { WizardSharedProps } from "../types";
+import { FieldValid } from "../field-valid";
+import { MAX_LISTING_PRICE_NOK } from "@/lib/constants";
+import { RequiredMark } from "../required-mark";
+import { SimilarListings } from "../similar-listings";
+import { OmregistreringsavgiftBox } from "./omregistreringsavgift-box";
+
+/** Enforced on the input too, so it can never produce a value the client
+ * schema, draft save or publish would reject. */
+const MAX_PRICE_NOK = MAX_LISTING_PRICE_NOK;
+
+/**
+ * Pris (price) + "gis bort gratis" + WTB-treff-hint. The WTB hint used to be
+ * web-only; per the approved native-gap fix it now renders on both platforms
+ * since it only depends on category_id + price_nok, not on anything
+ * platform-specific.
+ *
+ * For kjøretøy also shows the omregistreringsavgift (re-registration fee) the
+ * *buyer* pays to the state on ownership transfer, alongside a read-only
+ * "Pris synlig i annonse" field right next to the price input — priceNok +
+ * the fee, i.e. exactly the number a buyer will see on the published
+ * listing, visible at a glance rather than buried in a paragraph below. The
+ * calculated fee defaults from `computeOmregistreringsavgift`, but the seller
+ * can override it (stored in `attributes.omregistreringsavgift_override_kr`)
+ * if they believe it's wrong — e.g. our SVV-derived weight/age is off, or a
+ * fritak/exemption applies we don't model. The override is never re-derived
+ * server-side, so the seller is told plainly that they're responsible for it
+ * being correct.
+ */
+export function Price({
+  register,
+  errors,
+  touchedFields,
+  isFree,
+  setValue,
+  priceNok,
+  wtbMatch,
+  behavior,
+  calculatedBuyerFeeKr,
+  attributes,
+  onAttributesChange,
+  lockedFree,
+  similarListings,
+  heroSize = false,
+}: WizardSharedProps & {
+  /** Larger price input/label — used by `vehicle-price`'s dedicated,
+   * visually distinct last-step page. Cosmetic only, no behavior change. */
+  heroSize?: boolean;
+}) {
+  const [editingAvgift, setEditingAvgift] = useState(false);
+  const calculatedAvgiftKr = behavior.buyerFee ? calculatedBuyerFeeKr : null;
+  const avgiftOverrideRaw = attributes.omregistreringsavgift_override_kr;
+  const avgiftOverrideKr = typeof avgiftOverrideRaw === "number" ? avgiftOverrideRaw : null;
+  const omregistreringsavgiftKr = avgiftOverrideKr ?? calculatedAvgiftKr;
+  const avgiftFritatt = attributes.omregistreringsavgift_fritatt === true;
+  const avgiftInkludert = attributes.omregistreringsavgift_inkludert === true;
+  const setAvgiftFritatt = (checked: boolean) => {
+    const next = { ...attributes };
+    if (checked) {
+      next.omregistreringsavgift_fritatt = true;
+      delete next.omregistreringsavgift_inkludert;
+    } else {
+      delete next.omregistreringsavgift_fritatt;
+    }
+    onAttributesChange(next);
+  };
+  const setAvgiftInkludert = (checked: boolean) => {
+    const next = { ...attributes };
+    if (checked) {
+      next.omregistreringsavgift_inkludert = true;
+      delete next.omregistreringsavgift_fritatt;
+    } else {
+      delete next.omregistreringsavgift_inkludert;
+    }
+    onAttributesChange(next);
+  };
+  // Ikke en egen attributt — "kjøper bekoster" er ganske enkelt fraværet av
+  // begge de andre flaggene (standardtilstanden appen alltid har hatt), men
+  // vises nå som en egen, forhåndsavkrysset boks i tredelt radio-lignende
+  // UI i stedet for å være implisitt.
+  const avgiftKjoperBekoster = !avgiftFritatt && !avgiftInkludert;
+  const setAvgiftKjoperBekoster = () => {
+    const next = { ...attributes };
+    delete next.omregistreringsavgift_fritatt;
+    delete next.omregistreringsavgift_inkludert;
+    onAttributesChange(next);
+  };
+  // Avgiften kjøper faktisk betaler i tillegg til kjøpesummen — null når
+  // fritatt (ingen avgift) eller inkludert i kjøpesummen (allerede betalt av
+  // selger), selv om det beregnede/overstyrte beløpet fortsatt vises
+  // informativt i avgift-boksen under.
+  const avgiftAddedOnTopKr = avgiftFritatt || avgiftInkludert ? null : omregistreringsavgiftKr;
+  // `priceNok` isn't reliably a clean `number` — react-hook-form's blur
+  // handling (and other internal syncing) can end up re-reading it from a
+  // DOM/string representation, which for this field is the space-formatted
+  // display value ("200 000", with an nb-NO non-breaking space). A strict
+  // `Number(priceNok)` breaks on that space and silently produces NaN → this
+  // whole vehicle section disappearing. Parse it the same tolerant way
+  // `formatThousands` displays it: strip everything but digits first, then
+  // convert — so a stray space/formatting artifact never breaks this.
+  const priceNumeric = (() => {
+    if (typeof priceNok === "number") return priceNok;
+    if (typeof priceNok !== "string") return null;
+    const digits = priceNok.replace(/[^\d]/g, "");
+    return digits === "" ? null : Number(digits);
+  })();
+  // "Pris synlig i annonse" stays visible whenever there's a price to show,
+  // even when fritatt/inkludert means nothing gets added on top — it's still
+  // useful confirmation of exactly what the buyer will see, not just a
+  // conditional add-on display.
+  const totalprisKr =
+    !isFree && priceNumeric != null ? priceNumeric + (avgiftAddedOnTopKr ?? 0) : null;
+  // The *listing's displayed total* (price + avgift) must never exceed
+  // MAX_PRICE_NOK, so the price input's own ceiling is lowered by whatever
+  // fee is currently in play — otherwise a seller could type a price that,
+  // once the fee is added, shows a "Pris synlig i annonse" above the cap.
+  // No reduction when fritatt/inkludert, since nothing gets added on top.
+  const maxPriceInputKr =
+    avgiftAddedOnTopKr != null ? Math.max(0, MAX_PRICE_NOK - avgiftAddedOnTopKr) : MAX_PRICE_NOK;
+  // Clamps down an already-typed price if the avgift only becomes known (or
+  // grows) afterwards — e.g. a registration lookup resolving after the
+  // seller already entered a price — so the total can never drift past
+  // MAX_PRICE_NOK just because the input's max wasn't this tight yet when it
+  // was typed.
+  const clampPrice = useEffectEvent((max: number) => {
+    if (priceNumeric != null && priceNumeric > max) {
+      setValue("price_nok", max, { shouldValidate: true, shouldDirty: true });
+    }
+  });
+  useEffect(() => {
+    clampPrice(maxPriceInputKr);
+  }, [maxPriceInputKr]);
+  // Dempet prisforslag under feltet, basert på lignende AKTIVE annonser i
+  // samme kategori (samme `similarListings` som "Lignende annonser"-lista
+  // under, se similar-listings.tsx — henter kun status="active", aldri
+  // solgte annonser, så teksten skal si "til salgs", ikke "solgt").
+  // 25–75-persentil, ikke min/maks, så et par ekstremverdier ikke dominerer
+  // spennet. Kun `heroSize` (vehicle-price) hopper over denne — den har sin
+  // egen SimilarListings-plassering og et eget dedikert siste-steg.
+  const similarPrices = (similarListings ?? [])
+    .filter((l) => !l.is_free)
+    .map((l) => displayPriceNok(l))
+    .filter((p): p is number => typeof p === "number");
+  const priceSpread = priceRange(similarPrices);
+  const priceField = register("price_nok");
+  // type=="free" (fra intent+tittel-landingsbildet): hele
+  // pris-spørsmålet skal skjules — is_free er allerede forhåndssatt true av
+  // ny-annonse.tsx sine defaultValues. type=="sell": prisfeltet vises som
+  // vanlig, men "gis bort gratis"-avkrysningen skjules helt (se under).
+  if (lockedFree === "free") return null;
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center gap-1.5">
+        <Label htmlFor="price_nok" className={heroSize ? "text-base" : undefined}>
+          Pris
+          <RequiredMark />
+        </Label>
+        <FieldValid
+          show={
+            (!!touchedFields.price_nok || isFree) &&
+            !errors.price_nok &&
+            (isFree || typeof priceNok === "number")
+          }
+        />
+      </div>
+      <div className="flex w-full flex-col gap-3">
+        <div className="w-full space-y-1">
+          <div className="relative w-full">
+            <Input
+              id="price_nok"
+              type="text"
+              inputMode="numeric"
+              // Annonsens viktigste tall skal aldri late som om det allerede
+              // har en verdi — et "0" i et tomt felt ser ut som en pris.
+              placeholder={heroSize ? "0" : undefined}
+              disabled={isFree}
+              className={
+                heroSize
+                  ? "h-16 w-full pr-12 text-right text-4xl font-semibold"
+                  : "h-16 w-full pl-3 pr-14 text-left font-display text-4xl tabular-nums"
+              }
+              aria-required={!isFree}
+              aria-invalid={!!errors.price_nok}
+              aria-describedby={errors.price_nok ? "price-error" : undefined}
+              // Only `name`/`ref` from register() — NOT the full spread.
+              // register()'s `onBlur` reads the value straight off the DOM
+              // node on blur (its uncontrolled-field fallback sync), which
+              // here is the space-formatted display string ("200 000", with
+              // an nb-NO non-breaking space) rather than the clean number we
+              // write via setValue below. That formatted string then became
+              // price_nok itself, `Number("200 000")` is NaN, and this whole
+              // vehicle section quietly disappeared the moment the field
+              // blurred — e.g. by clicking into Beskrivelse right after.
+              name={priceField.name}
+              ref={priceField.ref}
+              value={formatThousands(priceNok, maxPriceInputKr)}
+              onChange={(e) => {
+                const digits = digitsOnlyClamped(e.target.value, maxPriceInputKr);
+                setValue("price_nok", digits === "" ? "" : Number(digits), {
+                  shouldValidate: true,
+                  shouldDirty: true,
+                  shouldTouch: true,
+                });
+              }}
+            />
+            <span
+              className={`pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground ${heroSize ? "text-xl" : "text-lg"}`}
+            >
+              kr
+            </span>
+          </div>
+          {!heroSize && priceSpread && (
+            <p className="text-sm text-muted-foreground">
+              Lignende til salgs for {formatNokNumber(priceSpread.low)}–
+              {formatNok(priceSpread.high)}
+            </p>
+          )}
+        </div>
+        {behavior.buyerFee && totalprisKr != null && (
+          <div className="w-full space-y-1">
+            <Label
+              htmlFor="price-visible-in-listing"
+              className={
+                heroSize ? "text-sm text-muted-foreground" : "text-xs text-muted-foreground"
+              }
+            >
+              Pris synlig i annonse
+            </Label>
+            <Input
+              id="price-visible-in-listing"
+              disabled
+              className={
+                heroSize
+                  ? "h-16 w-full text-right text-2xl text-muted-foreground"
+                  : "max-w-[200px] text-muted-foreground"
+              }
+              value={`${formatNokNumber(totalprisKr)} kr`}
+            />
+          </div>
+        )}
+        {behavior.allowsGiveaway && lockedFree !== "sell" && (
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={isFree} onCheckedChange={(v) => setValue("is_free", Boolean(v))} />
+            Gis bort gratis
+          </label>
+        )}
+      </div>
+      {behavior.allowsGiveaway && !isFree && priceNok === 0 && lockedFree !== "sell" && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          Vil du gi varen bort gratis?
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setValue("is_free", true)}
+          >
+            Velg Gis bort
+          </Button>
+        </div>
+      )}
+      {errors.price_nok && (
+        <p id="price-error" className="text-sm text-destructive">
+          {errors.price_nok.message as string}
+        </p>
+      )}
+      {behavior.buyerFee && (
+        <OmregistreringsavgiftBox
+          omregistreringsavgiftKr={omregistreringsavgiftKr}
+          calculatedAvgiftKr={calculatedAvgiftKr}
+          avgiftOverrideKr={avgiftOverrideKr}
+          avgiftFritatt={avgiftFritatt}
+          avgiftInkludert={avgiftInkludert}
+          editingAvgift={editingAvgift}
+          setEditingAvgift={setEditingAvgift}
+          onOverrideChange={(v) => {
+            const next = { ...attributes };
+            if (v === "") delete next.omregistreringsavgift_override_kr;
+            else next.omregistreringsavgift_override_kr = Number(v);
+            onAttributesChange(next);
+          }}
+          onResetOverride={() => {
+            const next = { ...attributes };
+            delete next.omregistreringsavgift_override_kr;
+            onAttributesChange(next);
+          }}
+          avgiftKjoperBekoster={avgiftKjoperBekoster}
+          setAvgiftFritatt={setAvgiftFritatt}
+          setAvgiftInkludert={setAvgiftInkludert}
+          setAvgiftKjoperBekoster={setAvgiftKjoperBekoster}
+        />
+      )}
+      {wtbMatch && wtbMatch.count > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
+          <Search className="mt-0.5 size-4 shrink-0 text-primary" />
+          <div>
+            <span className="font-medium">
+              {wtbMatch.count === 1
+                ? "1 bruker ønsker å kjøpe noe lignende"
+                : `${wtbMatch.count} brukere ønsker å kjøpe noe lignende`}
+            </span>
+            {wtbMatch.maxPrice != null && (
+              <span className="text-muted-foreground">
+                {" "}
+                — høyeste budsjett{" "}
+                <span className="font-medium text-foreground">
+                  {formatNokNumber(wtbMatch.maxPrice)} kr
+                </span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Registry-facing wrapper: Price + "Lignende annonser". Attaches
+ * SimilarListings directly below Price (mirroring where it already sits on
+ * native today) so it has a single home in the field-group registry instead
+ * of being interleaved ad hoc per platform in ny-annonse.tsx.
+ */
+export function PriceGroup(props: WizardSharedProps) {
+  if (props.lockedFree === "free") return null;
+  return (
+    <>
+      <Price {...props} />
+      <SimilarListings similarListings={props.similarListings} />
+    </>
+  );
+}

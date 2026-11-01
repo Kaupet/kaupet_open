@@ -1,0 +1,105 @@
+export type ListingCardData = {
+  id: string;
+  kaupet_code: string;
+  title: string;
+  subtitle?: string | null;
+  price_nok: number | null;
+  is_free: boolean;
+  city: string | null;
+  created_at: string;
+  cover_path: string | null;
+  total_views?: number;
+  views_last_week?: number;
+  mileage_km?: number | null;
+  engine_hours?: number | null;
+  category_slug?: string | null;
+  attributes?: Record<string, unknown> | null;
+  /** Satt for solgte annonser — kortet viser Solgt-merke og «Solgt» som pris. */
+  sold_at?: string | null;
+  /** Reservert til en kjøper (listings.reserved_until fram i tid). */
+  reserved_until?: string | null;
+};
+
+export type PopularListingRow = Omit<ListingCardData, "id" | "attributes"> & {
+  listing_id: string;
+  subtitle: string | null;
+  category_slug: string | null;
+  attributes: unknown;
+  mileage_km: number | null;
+};
+
+/** Maps either popularity RPC result to the shared listing-card shape. */
+export function toPopularListingCardData(row: PopularListingRow): ListingCardData {
+  const attrs = row.attributes as Record<string, unknown> | null;
+  const engineHoursRaw = attrs?.engine_hours;
+  return {
+    id: row.listing_id,
+    kaupet_code: row.kaupet_code,
+    title: row.title,
+    subtitle: row.subtitle,
+    price_nok: row.price_nok,
+    is_free: row.is_free,
+    city: row.city,
+    created_at: row.created_at,
+    cover_path: row.cover_path,
+    total_views: Number(row.total_views ?? 0),
+    views_last_week: Number(row.views_last_week ?? 0),
+    mileage_km: row.mileage_km != null ? Number(row.mileage_km) : null,
+    engine_hours:
+      typeof engineHoursRaw === "number" && Number.isFinite(engineHoursRaw) ? engineHoursRaw : null,
+    category_slug: row.category_slug,
+    attributes: row.attributes as Record<string, unknown> | null,
+  };
+}
+
+/** Shape returned by a Supabase `listings` select with the standard
+ * `listing_images(storage_path, sort_order), attributes, categories(slug)`
+ * join — the raw row `toListingCardData` maps into a `ListingCardData`. */
+export type RawListingCardRow = {
+  id: string;
+  kaupet_code: string;
+  title: string;
+  subtitle: string | null;
+  price_nok: number | null;
+  is_free: boolean;
+  city: string | null;
+  created_at: string;
+  reserved_until?: string | null;
+  listing_images: { storage_path: string; sort_order: number }[] | null;
+  attributes: unknown;
+  categories: { slug: string } | { slug: string }[] | null;
+};
+
+/**
+ * Maps a raw `listings` row (with the standard listing_images/attributes/
+ * categories join) to `ListingCardData` — picks the lowest-sort_order image
+ * as the cover, pulls `mileage_km` out of the free-form `attributes` JSON,
+ * and unwraps the `categories` relation (Supabase returns it as an array or
+ * a single object depending on the join). Shared by every screen that reads
+ * listings straight from the table rather than through a search/RPC path
+ * that already returns `ListingCardData`-shaped rows.
+ */
+export function toListingCardData(row: RawListingCardRow): ListingCardData {
+  const imgs = (row.listing_images ?? []).slice().sort((a, b) => a.sort_order - b.sort_order);
+  const attrs = row.attributes as Record<string, unknown> | null;
+  const mileageRaw = attrs?.mileage_km;
+  const engineHoursRaw = attrs?.engine_hours;
+  const category = Array.isArray(row.categories) ? row.categories[0] : row.categories;
+  return {
+    id: row.id,
+    kaupet_code: row.kaupet_code,
+    title: row.title,
+    subtitle: row.subtitle,
+    price_nok: row.price_nok,
+    is_free: row.is_free,
+    city: row.city,
+    created_at: row.created_at,
+    cover_path: imgs[0]?.storage_path ?? null,
+    mileage_km: typeof mileageRaw === "number" && Number.isFinite(mileageRaw) ? mileageRaw : null,
+    engine_hours:
+      typeof engineHoursRaw === "number" && Number.isFinite(engineHoursRaw) ? engineHoursRaw : null,
+    category_slug: category?.slug ?? null,
+    attributes: attrs,
+    reserved_until: row.reserved_until ?? null,
+  };
+}

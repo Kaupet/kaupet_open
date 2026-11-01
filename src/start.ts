@@ -1,0 +1,156 @@
+import "./lib/zod-config";
+import { getSupabaseAdmin } from "@/integrations/supabase/admin";
+import { createStart, createMiddleware, createCsrfMiddleware } from "@tanstack/react-start";
+import { isNotFound, isRedirect } from "@tanstack/react-router";
+import { getRequest, setResponseHeader, setResponseStatus } from "@tanstack/react-start/server";
+import { ZodError } from "zod";
+
+import { renderErrorPage } from "./lib/error-page";
+import { attachSupabaseAuth } from "@/integrations/supabase/auth-attacher";
+import { requestBodyExceedsLimit } from "@/lib/request-size.server";
+import { buildSecurityHeaders } from "@/lib/security-headers";
+import { clientIp } from "@/lib/client-ip";
+import { ClientError, isAlreadyLogged } from "@/lib/to-client-error";
+import { describeSafeError } from "@/lib/safe-error";
+
+const cspNonceMiddleware = createMiddleware().server(async ({ next }) => {
+  const nonce = crypto.randomUUID().replaceAll("-", "");
+  const headers = buildSecurityHeaders({
+    environment: import.meta.env.VITE_ENVIRONMENT,
+    development: import.meta.env.DEV,
+    r2PublicBaseUrl: import.meta.env.VITE_R2_PUBLIC_BASE_URL,
+    r2Endpoint: import.meta.env.R2_ENDPOINT,
+    supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
+    scriptNonce: nonce,
+  });
+  const response = await next({ context: { cspNonce: nonce } });
+  if (headers["x-robots-tag"]) setResponseHeader("x-robots-tag", headers["x-robots-tag"]);
+  if (response instanceof Response) {
+    response.headers.set("content-security-policy", headers["content-security-policy"]);
+    if (headers["x-robots-tag"]) response.headers.set("x-robots-tag", headers["x-robots-tag"]);
+  } else if (response?.response instanceof Response) {
+    response.response.headers.set("content-security-policy", headers["content-security-policy"]);
+    if (headers["x-robots-tag"])
+      response.response.headers.set("x-robots-tag", headers["x-robots-tag"]);
+  } else {
+    setResponseHeader("content-security-policy", headers["content-security-policy"]);
+  }
+  return response;
+});
+
+const errorMiddleware = createMiddleware().server(async ({ next }) => {
+  try {
+    return await next();
+  } catch (error) {
+    if (error != null && typeof error === "object" && "statusCode" in error) {
+      throw error;
+    }
+    console.error("[request] unhandled error", describeSafeError(error));
+    return new Response(renderErrorPage(), {
+      status: 500,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+  }
+});
+
+// TanStack Start fanger kast fra serverfunksjoner i middleware-kjeden og
+// serialiserer dem som et vanlig 200-svar — `console.error("Server Fn Error!")`
+// i server-functions-handler nås aldri. Uten denne middlewaren havner feilen
+// bare i Response-bodyen, aldri i Workers-loggen/wrangler tail.
+const serverFnErrorLogMiddleware = createMiddleware({ type: "function" }).server(
+  async ({ next, serverFnMeta }) => {
+    try {
+      return await next();
+    } catch (error) {
+      if (!isRedirect(error) && !isNotFound(error)) {
+        const status =
+          error instanceof ClientError ? error.status : error instanceof ZodError ? 400 : 500;
+        const label = `[serverFn] ${serverFnMeta.name} (${serverFnMeta.filename}) ${status}`;
+        if (status < 500) console.warn(label, describeSafeError(error));
+        else if (!isAlreadyLogged(error)) console.error(label, describeSafeError(error));
+        // Bare for RPC-kall fra nettleseren: in-process-kall under SSR deler
+        // sidens respons, og en loader som håndterer feilen skal ikke gi 500.
+        if (getRequest()?.headers.get("x-tsr-serverFn") === "true") setResponseStatus(status);
+      }
+      throw error;
+    }
+  },
+);
+
+// In-memory cache to avoid hitting the DB on every request.
+const ipCache = new Map<string, { banned: boolean; expires: number }>();
+const IP_CACHE_TTL_MS = 60_000;
+const IP_CACHE_MAX = 10_000;
+
+// Only block write/auth requests. Read-only requests (GET/HEAD/OPTIONS) are
+// always allowed so banned IPs can still browse the site.
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const requestSizeMiddleware = createMiddleware().server(async ({ next }) => {
+  const request = getRequest();
+  if (!request || !WRITE_METHODS.has(request.method.toUpperCase())) return next();
+
+  if (await requestBodyExceedsLimit(request)) {
+    return new Response("Forespørselen er for stor.", {
+      status: 413,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  return next();
+});
+
+const ipBanMiddleware = createMiddleware().server(async ({ next }) => {
+  try {
+    const request = getRequest();
+    if (!request) return next();
+    if (!WRITE_METHODS.has(request.method.toUpperCase())) return next();
+    const ip = clientIp(request.headers);
+    if (!ip) return next();
+
+    const now = Date.now();
+    const cached = ipCache.get(ip);
+    let banned = false;
+    if (cached && cached.expires > now) {
+      banned = cached.banned;
+    } else {
+      ipCache.delete(ip);
+      // Without env (local/test) the check is skipped, as before; client.server would throw.
+      if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        const admin = await getSupabaseAdmin();
+        const { data } = await admin.rpc("is_ip_banned", { _ip: ip });
+        banned = data === true;
+        // ponytail: hard cap, clear() instead of LRU; cache just refills from the DB
+        if (ipCache.size >= IP_CACHE_MAX) ipCache.clear();
+        ipCache.set(ip, { banned, expires: now + IP_CACHE_TTL_MS });
+      }
+    }
+
+    if (banned) {
+      return new Response("Tilgang nektet (IP sperret).", {
+        status: 403,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+  } catch (err) {
+    console.error("[ip-ban-middleware]", describeSafeError(err));
+  }
+  return next();
+});
+
+// GET server functions are read-only and don't need CSRF protection; excluding
+// them avoids false-positive 403s (e.g. requests missing Origin/Sec-Fetch-Site
+// headers) breaking read paths like category suggestion.
+const csrfMiddleware = createCsrfMiddleware({
+  filter: (ctx) => ctx.handlerType === "serverFn" && ctx.request.method !== "GET",
+});
+
+export const startInstance = createStart(() => ({
+  functionMiddleware: [serverFnErrorLogMiddleware, attachSupabaseAuth],
+  requestMiddleware: [
+    cspNonceMiddleware,
+    errorMiddleware,
+    requestSizeMiddleware,
+    ipBanMiddleware,
+    csrfMiddleware,
+  ],
+}));

@@ -1,0 +1,590 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+@import "./brand.css";
+
+@custom-variant dark (&:is(.dark *));
+/* Touch-idiomer (trykk-krymping o.l.) hører hjemme i appen, ikke i
+   nettleseren — `.native` settes på <html> av native-oppstarten. */
+@custom-variant native (&:is(.native *));
+/* Annonsesidens egne sm/md: samme vindusbrytepunkt som `sm:`/`md:`, men slått
+   av inne i `[data-phone-preview]` — telefonrammen i annonseflyten viser
+   mobilversjonen av siden uansett hvor bredt vinduet er. `:where` holder
+   spesifisiteten lik `md:`, så den publiserte siden får identisk CSS. */
+@custom-variant page-sm {
+  @media (width >= 40rem) {
+    &:where(:not([data-phone-preview], [data-phone-preview] *)) {
+      @slot;
+    }
+  }
+}
+@custom-variant page-md {
+  @media (width >= 48rem) {
+    &:where(:not([data-phone-preview], [data-phone-preview] *)) {
+      @slot;
+    }
+  }
+}
+
+/* Fra denne bredden står telefonrammen med forhåndsvisningen fast ved siden
+   av skjemaet i annonseflyten (ListingComposerShell); under den åpnes den fra
+   «Forhåndsvis». Navngitt (ikke `min-[1100px]:`) så den sorteres etter `lg:`. */
+@theme {
+  --breakpoint-dock: 68.75rem;
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  /* Nytt, mindre trinn for kompakte etiketter (bunnnav, ulest-merker) som
+     tidligere brukte faste text-[10px]/text-[11px] og dermed aldri fulgte
+     brukerens Dynamic Type-innstilling. Må stå i @theme (ikke bare :root)
+     for at Tailwind skal generere text-2xs-utiliteten i det hele tatt. */
+  --text-2xs: calc(0.625rem * var(--kaupet-text-scale));
+  --text-2xs--line-height: calc(1 / 0.625);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  /* Merkevareterrakotta, atskilt fra --accent (se forklaring ved :root i
+     src/brand.css). --color-brand-text dekker terrakotta brukt SOM tekstfarge på
+     krembakgrunn (eyebrows, ikoner, lenker); --color-brand/-foreground
+     dekker terrakotta brukt SOM flate (merker, prikker, kort). */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-text: var(--brand-text);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-foreground: var(--surface-foreground);
+}
+
+:root {
+  /* Semantic density tiers for the editorial, task, and data surfaces. Keep
+     spacing in the existing token layer so web and native use the same rhythm. */
+  --density-editorial-block: clamp(2.5rem, 7vw, 5rem);
+  --density-editorial-gap: 1.5rem;
+  --density-task-block: 1rem;
+  --density-task-gap: 0.75rem;
+  --density-data-block: 0.75rem;
+  --density-data-gap: 0.5rem;
+
+  /* Dynamic Type-skala satt av src/lib/text-scale.ts (kun iOS-native).
+     Standard er 1 — uendret oppførsel på web og Android. */
+  --kaupet-text-scale: 1;
+}
+
+/* Overstyrer Tailwinds egne `--text-*`-temavariabler (xs–7xl) med Dynamic
+   Type-skalaen (src/lib/text-scale.ts). Dette er en vanlig, ulaget
+   `:root`-regel, ikke en `@theme`-blokk — Tailwinds egne standardtokens
+   ligger i @layer theme, og ulagede regler vinner alltid over lagede regler
+   i kaskaden uansett rekkefølge/spesifisitet (verifisert i devtools).
+   `--text-*--line-height` er allerede enhetsløse forhold (f.eks.
+   `calc(1.25 / .875)`), så de holder riktig proporsjon automatisk uten å
+   måtte skaleres separat her. `--text-2xs` er registrert i @theme inline
+   over (nødvendig for at utiliteten skal genereres), ikke her. */
+:root {
+  --text-xs: calc(0.75rem * var(--kaupet-text-scale));
+  --text-sm: calc(0.875rem * var(--kaupet-text-scale));
+  --text-base: calc(1rem * var(--kaupet-text-scale));
+  --text-lg: calc(1.125rem * var(--kaupet-text-scale));
+  --text-xl: calc(1.25rem * var(--kaupet-text-scale));
+  --text-2xl: calc(1.5rem * var(--kaupet-text-scale));
+  --text-3xl: calc(1.875rem * var(--kaupet-text-scale));
+  --text-4xl: calc(2.25rem * var(--kaupet-text-scale));
+  --text-5xl: calc(3rem * var(--kaupet-text-scale));
+  --text-6xl: calc(3.75rem * var(--kaupet-text-scale));
+  --text-7xl: calc(4.5rem * var(--kaupet-text-scale));
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body {
+    min-height: 100dvh;
+    scrollbar-gutter: stable;
+  }
+
+  body[data-scroll-locked] {
+    padding-right: 0 !important;
+    margin-right: 0 !important;
+  }
+
+  /* Skjul WebViewens/nettleserens innebygde "tøm"-kryss på type="search"-felt
+   * — vi har egne tøm-knapper, og de innebygde dupliserte dem (se F10). */
+  input[type="search"]::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.01em;
+  }
+}
+/* The three density tiers keep visual hierarchy explicit without introducing
+   a second component or token system. */
+.density-editorial {
+  padding-block: var(--density-editorial-block);
+  gap: var(--density-editorial-gap);
+}
+.density-task {
+  padding-block: var(--density-task-block);
+  gap: var(--density-task-gap);
+}
+.density-data {
+  padding-block: var(--density-data-block);
+  gap: var(--density-data-gap);
+}
+
+/* The `var(--safe-area-inset-*, env(...))` pattern (not just `env()` alone) is
+   Capacitor's own documented workaround (@capacitor/core's SystemBars plugin,
+   see node_modules/@capacitor/core/system-bars.md): Android WebView < 140
+   reports `env(safe-area-inset-*)` as 0 under edge-to-edge, even though the
+   status bar really does overlap the WebView. SystemBars injects the real
+   inset into `--safe-area-inset-*` custom properties instead — `env()` stays
+   as the fallback for iOS/web, where it's already correct and no such
+   variable is ever injected. Skriv aldri uttrykket ut på nytt på et kallsted —
+   bruk aliasene under. De to frittstående skallsidene (capacitor-shell/*.html)
+   har hver sin kopi fordi de ikke går gjennom denne fila; utenom dem håndheves
+   regelen av `bun run check:safe-area` (scripts/check-safe-area.mjs), som
+   feiler CI-en hvis `env(safe-area-inset` dukker opp andre steder. */
+:root {
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+}
+
+/* Utility: top padding that respects the device safe area (notch / dynamic island). */
+.pt-safe {
+  padding-top: max(0.5rem, var(--safe-top));
+}
+.pb-safe {
+  padding-bottom: max(0.5rem, var(--safe-bottom));
+}
+
+/* Edge-to-edge Android (WebView >= 140 + viewport-fit=cover): the WebView's
+   drawable area genuinely extends under the status bar, and stays that size
+   for the whole page — `.pt-safe` only reserves space at the top of whatever
+   section applies it, at scroll position 0. It does nothing once the user
+   scrolls a DIFFERENT element up to y=0 (e.g. a search field further down a
+   page, not just a page's very first pixel), which then renders legible
+   content directly under the status bar's clock/icons. Verified live via
+   adb screencap on Medium_Phone API 36 (staging build): scrolling
+   app-landing.tsx's hero out of view puts its search field exactly there.
+   A fixed, opaque bar pinned over exactly the inset height guarantees
+   nothing is ever legible under the status bar, on any page, at any scroll
+   position — independent of any one section's own top padding. Pages that
+   already render their own opaque sticky header here (NativePageHeader
+   z-30, SiteHeader z-40) simply paint over this at a higher z-index. */
+html.native body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--safe-top);
+  background: var(--color-background);
+  z-index: 20;
+  pointer-events: none;
+}
+
+/* Horisontal safe area — får betydning i landskap, der notch/dynamic island
+   ligger på siden. Merk at disse *erstatter* padding fra `px-*` på samme
+   element (ulagede regler vinner over Tailwinds utility-lag), akkurat som
+   `.pt-safe` gjør. Derfor to varianter:
+   - `.pl-safe`/`.pr-safe`: null i basis. For chrome som ikke har egen
+     horisontal padding (f.eks. NativePageHeader, der barna har sin egen px-3).
+   - `.px-safe`: 1rem i basis, altså en erstatning for `px-4` på fastlåste
+     bunnlinjer der innholdet faktisk går helt ut i kantene. */
+.pl-safe {
+  padding-left: var(--safe-left);
+}
+.pr-safe {
+  padding-right: var(--safe-right);
+}
+.px-safe {
+  padding-left: max(1rem, var(--safe-left));
+  padding-right: max(1rem, var(--safe-right));
+}
+
+/* Nøyaktig safe area på alle fire kanter, uten minimumsverdien `.pt-safe` har.
+   Brukes av FullscreenOverlayContent: en fullskjerm-takeover skal ikke få
+   8px luft rundt seg på enheter uten notch, den skal bare unngå systemets UI. */
+.p-safe {
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+
+/* Height reserved for the fixed bottom nav in native apps (AppBottomNav),
+   plus a margin so scrolled content/floating buttons never sit under it. */
+:root {
+  --app-bottom-nav-h: calc(6rem + var(--safe-bottom));
+}
+
+/* Høyden på det klistrede sidehodet (SiteHeader, `sticky top-0 z-40`).
+   Andre sticky-elementer lenger ned på siden må forskyves like mye — ellers
+   legger headeren seg over dem, siden den har høyere z-index.
+   4.5rem innhold + 1px bunnramme. */
+:root {
+  --site-header-h: calc(4.5rem + 1px + var(--safe-top));
+}
+/* I Capacitor-WebView-en er det NativePageHeader (h-12 + 1px ramme) som er
+   klistret, ikke SiteHeader. */
+.native {
+  --site-header-h: calc(3rem + 1px + var(--safe-top));
+}
+/* Composer-rutene (/ny-annonse, /ny-ok-annonse) skjuler SiteHeader og viser i
+   stedet sin egen slanke toppstripe (ListingComposerShell) — sticky-elementer
+   i shellen (progress-stripa, desktop-aside) må forskyves etter DEN høyden på
+   web. Native bruker fortsatt NativePageHeader og er uendret (mer spesifikk
+   selektor enn `.composer-route` alene, så den vinner for native). */
+.composer-route {
+  --site-header-h: calc(3.5rem + 1px + var(--safe-top));
+}
+.native .composer-route {
+  --site-header-h: calc(3rem + 1px + var(--safe-top));
+}
+.pb-bottom-nav {
+  padding-bottom: var(--app-bottom-nav-h);
+}
+.composer-route {
+  --app-bottom-nav-h: 0px;
+  --app-nav-rail-w: 0px;
+}
+
+.native .native-composer-shell {
+  --composer-motion-card: 240ms;
+  --composer-motion-error: 200ms;
+  height: var(--vvh, 100dvh);
+  max-height: var(--vvh, 100dvh);
+  overflow: hidden;
+}
+
+.native .native-composer-motion {
+  transition-property: transform, opacity;
+  transition-duration: var(--composer-motion-card);
+  transition-timing-function: ease-out;
+}
+
+.native .native-composer-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 1.25rem;
+  scroll-padding-block: 4rem 8rem;
+  box-shadow: 0 0.5rem 2rem color-mix(in oklab, var(--foreground) 8%, transparent);
+}
+
+.native .native-composer-card :is(input:not([type="checkbox"]):not([type="radio"]), select) {
+  min-height: 3.5rem;
+  padding-inline: 1rem;
+  border-radius: var(--radius);
+}
+
+.native .native-composer-card textarea {
+  min-height: 8rem;
+  padding: 0.875rem 1rem;
+  border-radius: var(--radius);
+}
+
+.native .native-composer-card :is(input, textarea, select) {
+  scroll-margin-block: 5rem 9rem;
+}
+
+.native .native-composer-card label {
+  line-height: 1.5;
+}
+
+/* Nettbrett (fase 10): bunnpillen erstattes av en sidestilt navigasjon, så
+   plassen skal reserveres til venstre i stedet for under. `.nav-rail` settes
+   på <html> av AppBottomNav når useFormFactor() === "tablet".
+   Må stå etter :root over — samme spesifisitet, siste regel vinner. Nuller
+   --app-bottom-nav-h fordi flere flater regner høyder fra den
+   (meldinger.$id: calc(100vh - var(--app-bottom-nav-h))). */
+.nav-rail {
+  --app-bottom-nav-h: 0px;
+  --app-nav-rail-w: calc(5rem + var(--safe-left));
+}
+.nav-rail .pb-bottom-nav {
+  padding-bottom: 0;
+  padding-left: var(--app-nav-rail-w);
+}
+
+/* Kategorivelgeren på nativeforsiden (CategoryRail i app-landing.tsx):
+   sentrerer raden når alle flisene får plass på skjermen. `safe` beholder
+   venstrejustering — og scrolles fra start — når raden flyter over; uten
+   den ville starten av en full rad blitt uscrollbar. Motorer uten
+   `safe`-støtte forkaster erklæringen og beholder vanlig start.
+   (Tailwind v4 genererer ikke justify-[safe_center], derfor bor regelen
+   her.) */
+.category-rail-scroll {
+  justify-content: safe center;
+}
+
+/* Annonsesiden på native-telefon: annonsebaren (pris + «Send melding») tar
+   bunnpillens plass, se NativeContactBar i listing-detail-view.tsx.
+   --app-bottom-nav-h beholdes — baren er like høy, så pb-bottom-nav og
+   toast-offset stemmer fortsatt. Sideskinnen på nettbrett røres ikke. */
+.listing-contact-bar:not(.nav-rail) .app-bottom-nav {
+  display: none;
+}
+
+/* Åpen samtale på native-telefon: skrivefeltet tar bunnpillens plass, se
+   ConversationOpen i meldinger.$id.tsx. I motsetning til annonsebaren over
+   står ingenting igjen i bunnen, så --app-bottom-nav-h nulles også.
+   Sideskinnen på nettbrett røres ikke. */
+.conversation-open:not(.nav-rail) {
+  --app-bottom-nav-h: 0px;
+}
+.conversation-open:not(.nav-rail) .app-bottom-nav {
+  display: none;
+}
+
+/* Native polish. `.native` settes på
+   <html> fra setupNative(), altså kun i Capacitor-WebView-en — web er
+   uberørt. */
+
+/* Androids standard grå/blå trykkrektangel over appens egne aktiv-tilstander. */
+.native {
+  -webkit-tap-highlight-color: transparent;
+  /* Behold WebView-ens plattformegne boundary-feedback: elastisk bounce på
+     iOS og edge-stretch/glow på Android. Overlays som må isolere scroll setter
+     `overscroll-behavior: contain` på sin egen scrollregion. */
+  overscroll-behavior: auto;
+}
+
+/* En synlig scrollbar er en web-signal i en native app-wrapper — skjul den
+   overalt i Capacitor-WebView-en (berøringsscroll trenger den ikke). */
+.native * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.native *::-webkit-scrollbar {
+  display: none;
+}
+
+/* Langtrykk på chrome skal ikke gi tekstmarkering eller iOS-kopimeny. Dette
+   er bevisst en liste over *interaktive* elementer, ikke en global av-bryter:
+   brødtekst, annonsebeskrivelser og meldinger skal fortsatt kunne kopieres.
+   Kortoverskrifter ligger inne i <a> og er dekket den veien. */
+.native :is(button, a, [role="button"], [role="tab"], label, nav, header, summary) {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Android anbefaler 48dp treffområder, mens iOS bruker 44pt. Disse to
+   utility-klassene lar native-flater oppfylle det strengeste kravet uten å
+   gjøre den tilsvarende web-kontrollen unødvendig stor:
+   - native-touch-target: vanlige kontroller kan vokse i layouten.
+   - native-hit-area: kompakt chrome beholder visuell størrelse, men får et
+     usynlig 48x48 treffområde. Bruk den siste bare når det er nok luft rundt. */
+.native .native-touch-target {
+  min-width: 3rem;
+  min-height: 3rem;
+}
+
+/* Bunnnavigasjonens etiketter (5 kolonner i en fast bredde pille) tåler ikke
+   full Dynamic Type-skalering uten å bryte sammen eller overlappe — samme
+   avveining Apples egen UITabBar gjør ved å dempe skaleringstaket for
+   kompakt chrome-tekst i stedet for å følge brødtekstens fulle skala.
+   Demper derfor til maks 1,3x her, i stedet for `text-2xs`/`text-xs` sin
+   fulle 2x. Reelt Dynamic Type-vekst (om enn dempet) er fortsatt bedre enn
+   den tidligere faste `text-[11px]` som aldri fulgte brukerens valg. */
+.native-nav-label {
+  font-size: calc(0.6875rem * clamp(1, var(--kaupet-text-scale, 1), 1.3));
+  line-height: 1.2;
+}
+
+.native .native-hit-area {
+  position: relative;
+}
+.native .native-hit-area::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3rem;
+  height: 3rem;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+/* Isoler Leaflet sin interne z-index-stack slik at panene (z-index 400–700)
+   ikke bryter ut over modal-overlays (Radix Dialog bruker z-50). */
+.leaflet-container {
+  isolation: isolate;
+  z-index: 0;
+}
+
+/* Kartverkets gråtonefliser har transparent bakgrunn. I mørk modus inverterer
+   vi kun selve rasterflisene, slik at kartet følger Kaupets mørke overflate
+   uten å endre markører eller Kartverkets attribusjon. */
+.dark .leaflet-container {
+  background-color: var(--color-background);
+}
+.dark .leaflet-tile {
+  filter: invert(1) grayscale(1) brightness(0.78) contrast(0.82);
+}
+
+@keyframes lappen-pin-in {
+  from {
+    transform: scale(0.96) rotate(0deg);
+  }
+  to {
+    transform: scale(1) rotate(-1.5deg);
+  }
+}
+
+@keyframes fab-icon-in {
+  from {
+    transform: rotate(-45deg) scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: rotate(0deg) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes fab-icon-in-reverse {
+  from {
+    transform: rotate(45deg) scale(0.6);
+    opacity: 0;
+  }
+  to {
+    transform: rotate(0deg) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes swipe-hint {
+  0%,
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  50% {
+    transform: translateX(-6px);
+    opacity: 0.6;
+  }
+}
+
+/* -even/-odd are duplicates of the same keyframes on purpose: alternating
+   the class name on every validation attempt forces the animation to
+   restart even when two consecutive attempts land on the same class. */
+@keyframes composer-validation-error-even {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  30% {
+    transform: translateX(-0.35rem);
+  }
+  60% {
+    transform: translateX(0.25rem);
+  }
+}
+
+@keyframes composer-validation-error-odd {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  30% {
+    transform: translateX(-0.35rem);
+  }
+  60% {
+    transform: translateX(0.25rem);
+  }
+}
+
+.composer-validation-error-even,
+.composer-validation-error-odd {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--destructive) 55%, transparent);
+  background-color: color-mix(in oklab, var(--destructive) 7%, transparent);
+}
+
+.composer-validation-error-even {
+  animation: composer-validation-error-even var(--composer-motion-error, 200ms) ease-out;
+}
+
+.composer-validation-error-odd {
+  animation: composer-validation-error-odd var(--composer-motion-error, 200ms) ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .native .native-composer-motion {
+    transition: none;
+  }
+  .composer-validation-error-even,
+  .composer-validation-error-odd {
+    animation: none;
+  }
+}
+
+/* Native boot splash overlay, shown only inside the Capacitor WebView while
+   public/boot.js decides whether to add the "native-boot" class. */
+#native-boot-splash {
+  display: none;
+}
+.native-boot #native-boot-splash {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+  background: #fbf9f3;
+  transition: opacity 200ms ease-out;
+}
+.native-boot #native-boot-splash .native-boot-icon {
+  width: 64px;
+  height: 64px;
+  background: url("/favicon.svg") center / contain no-repeat;
+  animation: native-boot-pulse 1.6s ease-in-out infinite;
+}
+@keyframes native-boot-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}

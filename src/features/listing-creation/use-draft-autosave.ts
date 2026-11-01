@@ -1,0 +1,811 @@
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { showSuccessToast } from "@/lib/toast";
+import {
+  discardDraftListing,
+  saveDraftListing,
+  syncDraftListingImages,
+} from "@/lib/listings.functions";
+import { verticals } from "@/lib/verticals";
+import type { AttributeMap } from "@/components/attribute-fields";
+import type { PendingImage } from "@/components/image-uploader";
+import {
+  clearDraftImages,
+  loadDraftImages,
+  saveDraftImages,
+  transferDraftImages,
+} from "@/features/listing-creation/draft-image-store";
+import {
+  reusableRemote,
+  uploadDraftImage,
+  type RemoteImage,
+} from "@/features/listing-creation/draft-image-sync";
+import {
+  draftStorageKey,
+  draftStorageScope,
+  clearLegacyDrafts,
+  isDraftFresh,
+  readItem,
+  removeItems,
+  writeItem,
+} from "@/features/listing-creation/draft-storage";
+
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+import { ownerPayload } from "./owner-payload";
+import { useDraftActor } from "./use-draft-actor";
+import { formatErrorMessage } from "@/lib/errors";
+
+type ListingCondition = "new" | "like_new" | "good" | "acceptable" | "for_parts";
+
+type DraftFields = {
+  title: string;
+  subtitle?: string;
+  description?: string;
+  selectedParentId: string;
+  categoryId: string;
+  condition?: ListingCondition | null;
+  isFree: boolean;
+  canShip?: string | null;
+  priceNok: number | string | undefined;
+  postalCode?: string;
+  city?: string;
+  organizationLocationId?: string | null;
+  coords: { lat: number; lng: number } | null;
+  /** CategoryBehavior.derivedTitle: tittelen avledes av attributtene. */
+  derivedTitle: boolean;
+  attributes: AttributeMap;
+  images: PendingImage[];
+  setImages: Dispatch<SetStateAction<PendingImage[]>>;
+  knownIssues?: string;
+  noKnownIssues?: boolean;
+  maintenanceHistory?: string;
+  stepKey: string;
+  /** False for a signed-out guest: localStorage/IndexedDB still autosave,
+   * but every Supabase draft call is skipped (the server functions require
+   * auth anyway — see requireSupabaseAuth in listings.functions.ts). */
+  authenticated: boolean;
+  userId: string | null;
+  organizationId: string | null;
+  resumeGuest?: boolean;
+};
+
+type RestoreTarget = {
+  // react-hook-form's setValue narrows `field` to a union of known form keys,
+  // which is contravariant with a plain `string` param here — accept `any`
+  // at this internal boundary rather than fight that when wiring it up.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setValue: (field: any, value: any) => void;
+  setSelectedParentId: (id: string) => void;
+  setLocationMethod: (method: "gps" | "postal" | null) => void;
+  setAttributes: (attributes: AttributeMap) => void;
+  setCoords: (coords: { lat: number; lng: number } | null) => void;
+};
+
+/**
+ * Owns draft persistence for the new-listing wizard: localStorage autosave
+ * (instant, client-only) plus periodic + on-hide Supabase draft saves (so a
+ * draft survives across devices/sessions). Pulled out of ny-annonse.tsx,
+ * which was mixing this with every other wizard concern in one component.
+ */
+export function useDraftAutosave(fields: DraftFields) {
+  const {
+    title,
+    subtitle,
+    description,
+    selectedParentId,
+    categoryId,
+    condition,
+    isFree,
+    canShip,
+    priceNok,
+    postalCode,
+    city,
+    derivedTitle,
+    attributes,
+    images,
+    setImages,
+    knownIssues,
+    noKnownIssues,
+    maintenanceHistory,
+    organizationLocationId,
+    coords,
+    stepKey,
+    authenticated,
+  } = fields;
+
+  const { ownerId, ownerOrganizationId, actorChanged, isCurrent } = useDraftActor(
+    fields.userId,
+    fields.organizationId,
+  );
+  const [storageScope] = useState(() =>
+    draftStorageScope("sell", ownerId, ownerOrganizationId, !!fields.resumeGuest),
+  );
+  const DRAFT_KEY = draftStorageKey("sell", ownerId, "", ownerOrganizationId) + storageScope;
+  const DRAFT_ID_KEY = draftStorageKey("sell", ownerId, "_id", ownerOrganizationId) + storageScope;
+  const DRAFT_UPDATED_AT_KEY =
+    draftStorageKey("sell", ownerId, "_updated_at", ownerOrganizationId) + storageScope;
+  const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
+  const draftSaveMessageRef = useRef<string | null>(null);
+  const guestTransfer = useRef<string | null>(null);
+  const publishPaused = useRef(false);
+  const lastServerSnapshot = useRef<string | null>(null);
+  const publishedListing = useRef<{ id: string; kaupet_code: string } | null>(null);
+  const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [draftSaveError, setDraftSaveError] = useState(false);
+  const [draftSaveConflict, setDraftSaveConflict] = useState(false);
+  const [hasDraftData, setHasDraftData] = useState<Record<string, unknown> | null>(null);
+  const [draftId, setDraftId] = useState<string | null>(null);
+  // The localStorage read below happens in an effect, so `hasDraftData` is
+  // still null during the first commit. Callers that redirect away when there
+  // is no draft (ny-annonse.tsx) have to wait for this instead, or they bounce
+  // the user off their own saved draft before it has been read.
+  const [draftChecked, setDraftChecked] = useState(false);
+  const draftIdRef = useRef<string | null>(null);
+  const draftUpdatedAtRef = useRef<string | null>(null);
+  const draftConflictRef = useRef(false);
+  const draftRestorePending = useRef(false);
+  const restoringDraft = useRef(false);
+  // Set by clearDraftStorage({ stopAutosave: true }) on publish: the wizard
+  // stays mounted (the success dialog renders on top of it) with the form
+  // still populated, so the 30s interval and the visibilitychange handler
+  // would otherwise fire another save. With draftIdRef nulled that save is an
+  // INSERT, which resurrects the just-published listing as a duplicate draft.
+  // One guard here covers all three save paths.
+  const draftSavingStopped = useRef(false);
+  const draftSaveInProgress = useRef<Promise<string | null> | null>(null);
+  const saveGeneration = useRef(0);
+  const imageStoreReady = useRef(false);
+  const imageLoadPromise = useRef<Promise<PendingImage[]> | null>(null);
+  const loadImagesRef = useRef<() => Promise<PendingImage[]>>(() => loadDraftImages(DRAFT_KEY));
+  const latestImages = useRef(images);
+  const imageSyncInProgress = useRef<Promise<boolean> | null>(null);
+  const lastImageSync = useRef<string | null>(null);
+  const latestLocalDraft = useRef<Record<string, unknown> | null>(null);
+  const localDraftRevision = useRef(0);
+  useEffect(() => {
+    draftRestorePending.current = hasDraftData !== null;
+  }, [hasDraftData]);
+  useEffect(() => {
+    draftIdRef.current = draftId;
+  }, [draftId]);
+
+  useEffect(() => {
+    latestImages.current = images;
+  }, [images]);
+
+  // Load draft from localStorage on mount
+  useEffect(() => {
+    try {
+      clearLegacyDrafts();
+      void clearDraftImages("current").catch(() => {});
+      if (ownerId && storageScope.startsWith(":handoff:")) {
+        const guestKey = draftStorageKey("sell", null);
+        const guest = readItem(guestKey);
+        // Retain the source until the images commit, so a reload can retry the same handoff.
+        if (
+          guest &&
+          storageScope === `:handoff:${JSON.parse(guest).saved_at}` &&
+          (readItem(DRAFT_KEY) || writeItem(DRAFT_KEY, guest))
+        ) {
+          guestTransfer.current = guest;
+        }
+      }
+      const savedId = readItem(DRAFT_ID_KEY);
+      draftUpdatedAtRef.current = readItem(DRAFT_UPDATED_AT_KEY);
+      if (savedId) {
+        draftIdRef.current = savedId;
+        setDraftId(savedId);
+      }
+      const saved = readItem(DRAFT_KEY);
+      if (!saved) return;
+      const data = JSON.parse(saved) as Record<string, unknown>;
+      if (
+        (data.draft_kind !== undefined && data.draft_kind !== "sell") ||
+        (typeof data.draft_version === "number" && data.draft_version > 1)
+      ) {
+        removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY);
+        draftIdRef.current = null;
+        setDraftId(null);
+        return;
+      }
+      const savedAt = typeof data.saved_at === "number" ? data.saved_at : 0;
+      if (isDraftFresh(savedAt)) {
+        if (data.title || data.description || Number(data.image_count) > 0) setHasDraftData(data);
+      } else {
+        removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY);
+        draftIdRef.current = null;
+        setDraftId(null);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDraftChecked(true);
+    }
+  }, [DRAFT_ID_KEY, DRAFT_KEY, DRAFT_UPDATED_AT_KEY, ownerId, storageScope]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadImages = async () => {
+      if (guestTransfer.current) {
+        const guestKey = draftStorageKey("sell", null);
+        if (JSON.parse(guestTransfer.current).image_count === 0) {
+          await clearDraftImages(guestKey);
+        } else {
+          await transferDraftImages(guestKey, DRAFT_KEY);
+        }
+        if (cancelled || !isCurrent()) return [];
+        if (readItem(guestKey) === guestTransfer.current) removeItems(guestKey);
+        guestTransfer.current = null;
+      }
+      const stored = await loadDraftImages(DRAFT_KEY);
+      if (cancelled || !isCurrent()) return [];
+      imageStoreReady.current = true;
+      return stored;
+    };
+    loadImagesRef.current = loadImages;
+    imageLoadPromise.current = loadImages();
+    void imageLoadPromise.current
+      .then(() => {
+        if (cancelled || !isCurrent() || draftRestorePending.current) return;
+        if (latestImages.current.length > 0)
+          return saveDraftImages(latestImages.current, DRAFT_KEY);
+      })
+      .catch(() => {
+        if (cancelled || !isCurrent()) return;
+        imageLoadPromise.current = null;
+        setDraftSaveError(true);
+        setDraftSaveMessage("Bildene kunne ikke gjenopprettes. Utkastet er beholdt. Prøv igjen.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [DRAFT_KEY, isCurrent]);
+
+  // Scalar/JSON fields live in localStorage. Binary image drafts are stored
+  // separately in IndexedDB below.
+  const buildLocalDraft = useCallback(
+    () => ({
+      draft_kind: "sell" as const,
+      draft_version: 1 as const,
+      title,
+      subtitle,
+      description,
+      selectedParentId,
+      category_id: categoryId,
+      condition,
+      is_free: isFree,
+      can_ship: canShip,
+      price_nok: priceNok,
+      postal_code: postalCode,
+      city,
+      organization_location_id: organizationLocationId,
+      coords,
+      attributes,
+      known_issues: knownIssues,
+      no_known_issues: noKnownIssues,
+      maintenance_history: maintenanceHistory,
+      image_count: images.length,
+      step_key: stepKey,
+      saved_at: Date.now(),
+    }),
+    [
+      title,
+      subtitle,
+      description,
+      selectedParentId,
+      categoryId,
+      condition,
+      isFree,
+      canShip,
+      priceNok,
+      postalCode,
+      city,
+      organizationLocationId,
+      coords,
+      attributes,
+      knownIssues,
+      noKnownIssues,
+      maintenanceHistory,
+      images.length,
+      stepKey,
+    ],
+  );
+
+  useIsomorphicLayoutEffect(() => {
+    latestLocalDraft.current = buildLocalDraft();
+    localDraftRevision.current += 1;
+  }, [buildLocalDraft]);
+
+  useEffect(() => {
+    if (draftRestorePending.current) return;
+    const t = window.setTimeout(() => {
+      if (draftSavingStopped.current || !isCurrent()) return;
+      if (writeItem(DRAFT_KEY, JSON.stringify(buildLocalDraft()))) setLastSaved(new Date());
+    }, 2000);
+    return () => window.clearTimeout(t);
+  }, [buildLocalDraft, hasDraftData, DRAFT_KEY, isCurrent]);
+
+  useEffect(() => {
+    if (!imageStoreReady.current) return;
+    const timeout = window.setTimeout(() => {
+      // Som for feltene: et ubesvart utkasttilbud eier fortsatt bildelageret
+      // på DRAFT_KEY, så nye bilder venter til brukeren har valgt.
+      if (!isCurrent() || draftSavingStopped.current || draftRestorePending.current) return;
+      void saveDraftImages(images, DRAFT_KEY).catch(() => setDraftSaveError(true));
+    }, 750);
+    return () => window.clearTimeout(timeout);
+  }, [images, hasDraftData, DRAFT_KEY, isCurrent]);
+
+  /** Writes the draft locally *now* — no debounce, no server call. Used when
+   * a signed-out guest is sent to /auth to publish: the draft has to survive
+   * the redirect, and the server would reject an unauthenticated save. */
+  async function flushLocalDraft(): Promise<boolean> {
+    if (!isCurrent()) return false;
+    if (writeItem(DRAFT_KEY, JSON.stringify(buildLocalDraft()))) {
+      setLastSaved(new Date());
+    } else {
+      setDraftSaveError(true);
+      return false;
+    }
+    try {
+      await saveDraftImages(latestImages.current, DRAFT_KEY);
+      setDraftSaveError(false);
+      return true;
+    } catch {
+      setDraftSaveError(true);
+      return false;
+    }
+  }
+  async function saveDraftToSupabase({ force = false } = {}): Promise<string | null> {
+    if (!authenticated || !ownerId || !isCurrent() || publishPaused.current) return null;
+    if (draftSavingStopped.current) return null;
+    if (draftConflictRef.current) return null;
+    if (draftRestorePending.current) return null;
+    draftSaveMessageRef.current = null;
+    const saveRevision = localDraftRevision.current;
+    if (writeItem(DRAFT_KEY, JSON.stringify(buildLocalDraft()))) {
+      setLastSaved(new Date());
+    } else {
+      setDraftSaveError(true);
+      return null;
+    }
+    const currentDraftId = draftIdRef.current;
+    if (draftSaveInProgress.current) return draftSaveInProgress.current;
+    // For Bil/MC the title is generated from the vehicle lookup (Årsmodell/
+    // Merke/Modell) and is only written into the form's `title` field once
+    // the user reaches the description step (see VehicleTitleFields), which
+    // comes *after* the image-upload step in the vehicle flow — so without
+    // this fallback a vehicle draft could not be saved before that step.
+    const effectiveTitle = (
+      derivedTitle ? (verticals.derivedTitle?.(attributes) ?? "") : (title ?? "")
+    ).trim();
+    if (effectiveTitle.length < 5) return null;
+    const snapshot = JSON.stringify({ ...buildLocalDraft(), saved_at: 0 });
+    if (!force && currentDraftId && snapshot === lastServerSnapshot.current) return currentDraftId;
+    publishedListing.current = null;
+    const generation = saveGeneration.current;
+    const save = (async () => {
+      try {
+        const result = await saveDraftListing({
+          data: {
+            expected_user_id: ownerId,
+            ...ownerPayload(ownerOrganizationId, organizationLocationId),
+            ...(currentDraftId ? { id: currentDraftId } : {}),
+            ...(currentDraftId && draftUpdatedAtRef.current
+              ? { expected_updated_at: draftUpdatedAtRef.current }
+              : {}),
+            title: effectiveTitle,
+            subtitle: (subtitle ?? "").trim() || null,
+            // Always send the value, never `undefined`: saveDraftListing strips
+            // undefined keys from the update payload, so an emptied description
+            // would keep whatever the row held before — which leaked the
+            // previous listing's text into the next one when the draft row is
+            // reused. Empty string rather than null: the column is NOT NULL.
+            description: (description ?? "").trim(),
+            category_id: categoryId || null,
+            condition: condition || null,
+            is_free: isFree,
+            price_nok: isFree ? null : typeof priceNok === "number" ? priceNok : null,
+            postal_code: postalCode || null,
+            city: city || null,
+            lat: coords?.lat ?? null,
+            lng: coords?.lng ?? null,
+            can_ship: canShip == null ? null : canShip !== "pickup",
+            known_issues: knownIssues?.trim() || null,
+            no_known_issues: !!noKnownIssues,
+            maintenance_history: maintenanceHistory?.trim() || null,
+            attributes,
+          },
+        });
+        if (saveGeneration.current !== generation || !isCurrent()) return null;
+        if ("conflict" in result) {
+          draftConflictRef.current = true;
+          draftUpdatedAtRef.current = result.updated_at;
+          writeItem(DRAFT_UPDATED_AT_KEY, result.updated_at);
+          setDraftSaveError(true);
+          setDraftSaveConflict(true);
+          return null;
+        }
+        setDraftSaveMessage(null);
+        draftIdRef.current = result.id;
+        if (result.updated_at) {
+          draftUpdatedAtRef.current = result.updated_at;
+        }
+        setDraftId(result.id);
+        draftConflictRef.current = false;
+        if ("published" in result && result.published) {
+          // A lost publish response: the listing is live, so these edits were not saved.
+          publishedListing.current = { id: result.id, kaupet_code: result.kaupet_code };
+          draftSaveMessageRef.current =
+            "Annonsen er allerede publisert. Endringer her lagres ikke – rediger den publiserte annonsen.";
+          setDraftSaveMessage(draftSaveMessageRef.current);
+          setDraftSaveError(true);
+          return null;
+        }
+        lastServerSnapshot.current = snapshot;
+        setLastSaved(new Date());
+        setDraftSaveError(false);
+        setDraftSaveConflict(false);
+        if (writeItem(DRAFT_ID_KEY, result.id) && result.updated_at) {
+          writeItem(DRAFT_UPDATED_AT_KEY, result.updated_at);
+        }
+        return result.id;
+      } catch (error) {
+        if (saveGeneration.current === generation && isCurrent()) {
+          draftSaveMessageRef.current = formatErrorMessage(
+            error,
+            "Utkastet kunne ikke lagres. Innholdet er beholdt lokalt. Prøv igjen senere.",
+          );
+          setDraftSaveMessage(draftSaveMessageRef.current);
+          setDraftSaveError(true);
+          setDraftSaveConflict(false);
+        }
+        return null;
+      } finally {
+        if (
+          isCurrent() &&
+          !draftSavingStopped.current &&
+          localDraftRevision.current > saveRevision &&
+          latestLocalDraft.current
+        ) {
+          writeItem(DRAFT_KEY, JSON.stringify(latestLocalDraft.current));
+        }
+        draftSaveInProgress.current = null;
+      }
+    })();
+    draftSaveInProgress.current = save;
+    return save;
+  }
+
+  /** Laster opp nye bilder til serverutkastet og avstemmer listen der, så
+   * utkastet i Mine annonser har bildene også uten den lokale kopien. Bilder
+   * som allerede er lastet opp, gjenbrukes. Returnerer false ved feil; bildene
+   * er da fortsatt lagret lokalt. */
+  async function syncDraftImages(listingId: string): Promise<boolean> {
+    // En ventende lagring må synke nyeste bildeliste etter den pågående synken.
+    while (imageSyncInProgress.current) {
+      if (!(await imageSyncInProgress.current)) return false;
+    }
+    if (!authenticated || !ownerId || !isCurrent() || publishPaused.current) return true;
+    if (draftSavingStopped.current || draftRestorePending.current) return true;
+    if (draftIdRef.current !== listingId) return false;
+    const run = (async () => {
+      const images = latestImages.current;
+      const remotes = new Map<string, RemoteImage>();
+      let uploaded = false;
+      const keepRemotes = (synced: boolean) => {
+        const update = (current: PendingImage[]) =>
+          current.map((image) => {
+            const remote = remotes.get(image.id);
+            return remote ? { ...image, remote: { ...remote, synced } } : image;
+          });
+        // Neste lagring kan fortsette før React har rendret opplastingsreferansene.
+        latestImages.current = update(latestImages.current);
+        setImages(update);
+      };
+      try {
+        // Én og én: opplastingen er rate-begrenset per bruker.
+        for (const image of images) {
+          const reusable = reusableRemote(image, listingId);
+          remotes.set(image.id, reusable ?? (await uploadDraftImage(listingId, image)));
+          uploaded ||= !reusable;
+          if (!isCurrent() || draftIdRef.current !== listingId) return false;
+        }
+        const refs = images.map((image, sortOrder) => {
+          const remote = remotes.get(image.id)!;
+          return {
+            id: remote.id,
+            storage_path: remote.path,
+            sort_order: sortOrder,
+            caption: image.caption?.trim() || null,
+            ai_generated: !!image.aiGenerated,
+          };
+        });
+        const signature = JSON.stringify([listingId, refs]);
+        if (signature !== lastImageSync.current) {
+          await syncDraftListingImages({
+            data: { expected_user_id: ownerId!, draftId: listingId, images: refs },
+          });
+          lastImageSync.current = signature;
+        }
+        if (!isCurrent()) return false;
+        if (uploaded || images.some((image) => !image.remote?.synced)) keepRemotes(true);
+        draftSaveMessageRef.current = null;
+        setDraftSaveMessage(null);
+        setDraftSaveError(false);
+        return true;
+      } catch (error) {
+        if (!isCurrent()) return false;
+        // Behold opplastingene, så neste forsøk ikke laster opp på nytt.
+        if (uploaded) keepRemotes(false);
+        draftSaveMessageRef.current = formatErrorMessage(
+          error,
+          "Bildene kunne ikke lagres i utkastet. De er beholdt på denne enheten. Prøv igjen senere.",
+        );
+        setDraftSaveMessage(draftSaveMessageRef.current);
+        setDraftSaveError(true);
+        return false;
+      }
+    })();
+    imageSyncInProgress.current = run;
+    try {
+      return await run;
+    } finally {
+      imageSyncInProgress.current = null;
+    }
+  }
+
+  /** Lagrer felt og bilder i serverutkastet. */
+  async function saveDraftWithImages(): Promise<string | null> {
+    const id = await saveDraftToSupabase();
+    if (!id) return null;
+    return (await syncDraftImages(id)) ? id : null;
+  }
+  const saveDraftWithImagesRef = useRef(saveDraftWithImages);
+  useIsomorphicLayoutEffect(() => {
+    saveDraftWithImagesRef.current = saveDraftWithImages;
+  });
+
+  async function ensureDraftId(): Promise<string | null> {
+    if (draftIdRef.current) return draftIdRef.current;
+    return saveDraftToSupabase();
+  }
+
+  async function retryDraftAfterConflict(): Promise<string | null> {
+    if (draftSaveInProgress.current) await draftSaveInProgress.current;
+    draftConflictRef.current = false;
+    setDraftSaveConflict(false);
+    return saveDraftToSupabase();
+  }
+
+  // Auto-save draft to Supabase every 30 seconds when form has enough data
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void saveDraftWithImagesRef.current();
+    }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [
+    title,
+    description,
+    categoryId,
+    condition,
+    isFree,
+    priceNok,
+    postalCode,
+    city,
+    organizationLocationId,
+    draftId,
+  ]);
+
+  // Flush the newest form snapshot straight into localStorage, synchronously
+  // and unconditionally except for the two real guards below. Reads
+  // everything through refs (latestLocalDraft/draftRestorePending, updated
+  // synchronously by the layout effect above and by restoreDraft/
+  // clearDraftStorage) instead of closing over `hasDraftData` state, so this
+  // can be wired up once on mount and still always see the latest answer —
+  // no stale closure, no need to tear the listeners down and rebuild them
+  // every time a draft is detected or restored.
+  //
+  // `draftRestorePending.current` alone is the "don't overwrite the
+  // not-yet-restored draft on disk with blank form state" guard (added in
+  // 7138667, see the "overskriver ikke et lokalt utkast..." test below): it
+  // is true for exactly as long as an unrestored draft is being offered to
+  // the user. Checking `hasDraftData !== null` in addition to it was a wider
+  // version of the same condition that read component state instead of the
+  // ref — since `restoreDraft`/`clearDraftStorage` flip the ref synchronously
+  // but `setHasDraftData` only takes effect on the next render, a hide/
+  // pagehide firing in that gap would see the ref already cleared but the
+  // stale `hasDraftData` state still non-null, and wrongly stay blocked.
+  const flushLocalDraftSync = useCallback(() => {
+    if (!isCurrent() || draftSavingStopped.current || draftRestorePending.current) return;
+    if (!latestLocalDraft.current) return;
+    if (writeItem(DRAFT_KEY, JSON.stringify(latestLocalDraft.current))) {
+      setLastSaved(new Date());
+    } else {
+      setDraftSaveError(true);
+    }
+  }, [DRAFT_KEY, isCurrent]);
+
+  // Save draft when the tab is hidden (switch away, close, or reload) and on
+  // pagehide — the reliable unload signal on mobile/iOS Safari, where
+  // visibilitychange can fire too late or not at all. Both matter: a change
+  // made just before the tab disappears must not wait for the 2s debounce
+  // above.
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.hidden) flushLocalDraftSync();
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", flushLocalDraftSync);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", flushLocalDraftSync);
+    };
+  }, [flushLocalDraftSync]);
+
+  async function restoreDraft(target: RestoreTarget) {
+    if (!isCurrent() || !hasDraftData) return;
+    restoringDraft.current = true;
+    const { setValue, setSelectedParentId, setLocationMethod, setAttributes, setCoords } = target;
+    if (typeof hasDraftData.title === "string") setValue("title", hasDraftData.title);
+    if (typeof hasDraftData.subtitle === "string") setValue("subtitle", hasDraftData.subtitle);
+    if (typeof hasDraftData.description === "string")
+      setValue("description", hasDraftData.description);
+    if (typeof hasDraftData.condition === "string") setValue("condition", hasDraftData.condition);
+    if (typeof hasDraftData.is_free === "boolean") setValue("is_free", hasDraftData.is_free);
+    // "both" is a legacy draft value from when this was a three-way choice
+    // it never survived: the column is a boolean, so "both" and "ship" always
+    // persisted identically. Normalise rather than drop, so old drafts keep a
+    // delivery method instead of coming back blank.
+    if (hasDraftData.can_ship === "pickup") setValue("can_ship", "pickup");
+    else if (hasDraftData.can_ship === "ship" || hasDraftData.can_ship === "both")
+      setValue("can_ship", "ship");
+    if (hasDraftData.price_nok !== undefined) setValue("price_nok", hasDraftData.price_nok);
+    if (typeof hasDraftData.postal_code === "string") {
+      setValue("postal_code", hasDraftData.postal_code);
+      if (hasDraftData.postal_code) setLocationMethod("postal");
+    }
+    if (typeof hasDraftData.organization_location_id === "string")
+      setValue("organization_location_id", hasDraftData.organization_location_id);
+    if (typeof hasDraftData.city === "string") setValue("city", hasDraftData.city);
+    if (
+      hasDraftData.coords &&
+      typeof hasDraftData.coords === "object" &&
+      typeof (hasDraftData.coords as { lat?: unknown }).lat === "number" &&
+      typeof (hasDraftData.coords as { lng?: unknown }).lng === "number"
+    ) {
+      setCoords(hasDraftData.coords as { lat: number; lng: number });
+    }
+    if (typeof hasDraftData.selectedParentId === "string")
+      setSelectedParentId(hasDraftData.selectedParentId);
+    if (typeof hasDraftData.category_id === "string")
+      setValue("category_id", hasDraftData.category_id);
+    if (hasDraftData.attributes && typeof hasDraftData.attributes === "object")
+      setAttributes(hasDraftData.attributes as AttributeMap);
+    if (typeof hasDraftData.known_issues === "string")
+      setValue("known_issues", hasDraftData.known_issues);
+    if (typeof hasDraftData.no_known_issues === "boolean")
+      setValue("no_known_issues", hasDraftData.no_known_issues);
+    if (typeof hasDraftData.maintenance_history === "string")
+      setValue("maintenance_history", hasDraftData.maintenance_history);
+    let restoredImages: PendingImage[];
+    try {
+      restoredImages = await (imageLoadPromise.current ?? loadImagesRef.current());
+    } catch {
+      setDraftSaveError(true);
+      setDraftSaveMessage("Bildene kunne ikke gjenopprettes. Utkastet er beholdt. Prøv igjen.");
+      return;
+    }
+    if (!isCurrent()) return;
+    if (restoredImages.length > 0) setImages(restoredImages);
+    setDraftSaveError(false);
+    setDraftSaveMessage(null);
+    draftRestorePending.current = false;
+    setHasDraftData(null);
+    showSuccessToast(
+      restoredImages.length > 0
+        ? `Utkast og ${restoredImages.length} bilder gjenopprettet`
+        : "Utkast gjenopprettet",
+    );
+  }
+
+  /** `stopAutosave` when the wizard is done with this draft for good (publish).
+   * Left false for "start over" flows, where the same mounted wizard keeps
+   * autosaving a fresh draft right afterwards. */
+  function clearDraftStorage({ stopAutosave = false }: { stopAutosave?: boolean } = {}) {
+    if (!isCurrent()) return;
+    publishPaused.current = false;
+    lastServerSnapshot.current = null;
+    publishedListing.current = null;
+    draftSavingStopped.current = stopAutosave;
+    saveGeneration.current += 1;
+    latestLocalDraft.current = null;
+    localDraftRevision.current += 1;
+    lastImageSync.current = null;
+    removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY);
+    draftUpdatedAtRef.current = null;
+    draftConflictRef.current = false;
+    setDraftSaveConflict(false);
+    draftRestorePending.current = false;
+    draftIdRef.current = null;
+    setHasDraftData(null);
+    setDraftId(null);
+    void clearDraftImages(DRAFT_KEY);
+  }
+
+  /** Brukeren gikk videre uten å svare på utkasttilbudet: den lokale kopien
+   * (felt og bilder) forkastes, mens serverkopien blir liggende urørt under
+   * Mine annonser. Autolagringen starter deretter et nytt utkast. */
+  function releaseDraftOffer() {
+    // Gjenopprettingen kan hoppe til lagret steg før bildene er lest inn.
+    if (restoringDraft.current || !hasDraftData) return;
+    clearDraftStorage();
+  }
+
+  async function discardDraft() {
+    if (!isCurrent()) return;
+    const id = draftIdRef.current ?? readItem(DRAFT_ID_KEY);
+    clearDraftStorage();
+    if (!authenticated || !id) return;
+    try {
+      await discardDraftListing({ data: { id } });
+      setDraftSaveError(false);
+    } catch {
+      // Local cleanup is intentional even when the server is unavailable.
+      setDraftSaveError(true);
+    }
+  }
+
+  async function preparePublish() {
+    if (!isCurrent()) throw new Error("Kontoen er endret. Logg inn med opprinnelig konto.");
+    // Finish the existing write before pausing; never publish with a stale render's draftId.
+    if (draftSaveInProgress.current) await draftSaveInProgress.current;
+    const id = await saveDraftToSupabase({ force: true });
+    if (!isCurrent()) throw new Error("Kontoen er endret. Logg inn med opprinnelig konto.");
+    if (publishedListing.current) {
+      publishPaused.current = true;
+      return { ...publishedListing.current, published: true as const };
+    }
+    if (!id)
+      throw new Error(
+        draftSaveMessageRef.current ?? "Utkastet må lagres før publisering. Prøv igjen.",
+      );
+    publishPaused.current = true;
+    return { id, published: false as const };
+  }
+
+  return {
+    actorChanged,
+    ownerId,
+    ownerOrganizationId,
+    isCurrent,
+    preparePublish,
+    resumeAutosave: () => {
+      publishPaused.current = false;
+    },
+    draftSaveMessage,
+    draftId,
+    draftChecked,
+    lastSaved,
+    draftSaveError,
+    draftSaveConflict,
+    hasDraftData,
+    flushLocalDraft,
+    saveDraftToSupabase,
+    saveDraftWithImages,
+    retryDraftAfterConflict,
+    ensureDraftId,
+    restoreDraft,
+    clearDraftStorage,
+    discardDraft,
+    releaseDraftOffer,
+  };
+}

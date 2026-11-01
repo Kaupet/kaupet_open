@@ -1,0 +1,139 @@
+import { Link } from "@tanstack/react-router";
+import { MapPin } from "lucide-react";
+import { memo, useState } from "react";
+import { ImageGallery } from "@/components/listing-detail/image-gallery";
+import { BoatInfoGrid, isBoatAttributes } from "@/components/listing-detail/boat/boat-info-grid";
+import { SOLD_PRICE_LABEL, SoldBanner, UsageLabel } from "@/components/listing-card";
+import type { ListingCardData } from "@/lib/listing-card-data";
+import { FavoriteButton } from "@/components/favorite-button";
+import { formatPrice, displayPriceNok } from "@/lib/format";
+import { useListingCardGallery } from "@/hooks/use-listing-card-gallery";
+import { verticals } from "@/lib/verticals";
+
+type Props = {
+  listing: ListingCardData;
+  linkState?: Record<string, unknown>;
+  coverImageUrl?: string | null;
+  knownFavorite?: boolean;
+  favoriteStateReady?: boolean;
+};
+
+/** Full-width "kort" search-result variant — a preview of the listing with
+ * its complete image gallery (lazy-loaded once scrolled into view; excludes
+ * 360°, since `ImageGallery` only renders that when a `spin360` prop is
+ * passed and we don't fetch/pass one here). */
+// Memoisert fordi hover-state i result-list ellers rendrer hele resultatlista
+// på nytt for hver musebevegelse mellom kort.
+export const ListingCardExpanded = memo(function ListingCardExpanded({
+  listing,
+  linkState,
+  coverImageUrl,
+  knownFavorite,
+  favoriteStateReady,
+}: Props) {
+  const [activeImage, setActiveImage] = useState(0);
+  const priceLabel = listing.sold_at
+    ? SOLD_PRICE_LABEL
+    : formatPrice({ price_nok: displayPriceNok(listing), is_free: listing.is_free });
+  const { rootRef, images, imgUrls, isLoading, effectiveImageUrl, handleImageError } =
+    useListingCardGallery(listing.id, listing.cover_path, coverImageUrl);
+
+  const attributes = listing.attributes ?? {};
+  // Samme utledning som listing-detail-view.tsx — kort-visningen skal vise de
+  // samme nøkkeltallene som detaljsiden, ikke en egen forkortet liste.
+  const verticalFacts =
+    verticals.listingCardFacts?.({
+      categorySlug: listing.category_slug ?? null,
+      attributes,
+      mileageKm: typeof listing.mileage_km === "number" ? listing.mileage_km : null,
+    }) ?? null;
+  const isBoatListing = !verticalFacts && isBoatAttributes(attributes);
+
+  return (
+    <article
+      ref={rootRef}
+      className="relative overflow-hidden rounded-xl border border-border bg-card"
+    >
+      <div className="p-4 pb-0">
+        <Link
+          to="/$kaupetCode"
+          params={{ kaupetCode: listing.kaupet_code }}
+          state={linkState}
+          className="block pr-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <h3 className="text-lg font-medium leading-snug">{listing.title}</h3>
+          {listing.subtitle && <p className="text-sm text-muted-foreground">{listing.subtitle}</p>}
+          <div className="mt-1 flex items-baseline justify-between gap-2">
+            <p
+              className={`font-display text-xl font-semibold ${listing.sold_at ? "uppercase" : ""}`}
+            >
+              {priceLabel}
+            </p>
+            {typeof listing.mileage_km === "number" ? (
+              <UsageLabel value={listing.mileage_km} unit="km" />
+            ) : typeof listing.engine_hours === "number" ? (
+              <UsageLabel value={listing.engine_hours} unit="t" />
+            ) : null}
+          </div>
+          {listing.city && (
+            <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
+              <MapPin className="size-3.5" /> {listing.city}
+            </p>
+          )}
+        </Link>
+      </div>
+
+      <div className="grid gap-4 p-4 sm:grid-cols-2">
+        <div className="relative overflow-hidden rounded-xl" onClick={(e) => e.stopPropagation()}>
+          {listing.sold_at && <SoldBanner compact={false} />}
+          {images.length > 0 ? (
+            <ImageGallery
+              images={images}
+              imgUrls={imgUrls}
+              activeImage={activeImage}
+              onSelect={setActiveImage}
+              title={listing.title}
+              showThumbnails={false}
+            />
+          ) : (
+            <div className="relative aspect-[4/3] overflow-hidden rounded-xl border border-border bg-muted">
+              {effectiveImageUrl ? (
+                <img
+                  src={effectiveImageUrl}
+                  alt={listing.title}
+                  className="size-full object-cover"
+                  onError={handleImageError}
+                />
+              ) : (
+                <div className="flex size-full items-center justify-center text-sm text-muted-foreground">
+                  {isLoading ? "Laster bilder…" : "Ingen bilder"}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <Link
+          to="/$kaupetCode"
+          params={{ kaupetCode: listing.kaupet_code }}
+          state={linkState}
+          className="flex flex-col gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          {(verticalFacts || isBoatListing) && (
+            <div>
+              {verticalFacts}
+              {isBoatListing && <BoatInfoGrid attributes={attributes} />}
+            </div>
+          )}
+        </Link>
+      </div>
+      <FavoriteButton
+        listingId={listing.id}
+        size="sm"
+        className="absolute right-6 top-6"
+        knownFavorite={knownFavorite}
+        favoriteStateReady={favoriteStateReady}
+      />
+    </article>
+  );
+});

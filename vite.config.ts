@@ -1,0 +1,242 @@
+import { defineConfig, loadEnv } from "vite";
+import tailwindcss from "@tailwindcss/vite";
+import viteReact from "@vitejs/plugin-react";
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import { nitro } from "nitro/vite";
+import { buildSecurityHeaders } from "./src/lib/security-headers.ts";
+import { POWERED_BY } from "./src/lib/site.ts";
+import { resolveR2Endpoint } from "./src/lib/r2.server.ts";
+
+// Velg annen vert ved bygg med NITRO_PRESET.
+const NITRO_PRESET = process.env.NITRO_PRESET || "cloudflare-module";
+
+export default defineConfig(({ command, mode }) => {
+  // Statically inline VITE_* env vars so they're also available in the
+  // Nitro-bundled server output, not just the client bundle.
+  const env = loadEnv(mode, process.cwd(), "VITE_");
+  const allEnv = loadEnv(mode, process.cwd(), "");
+  const envDefine = Object.fromEntries(
+    Object.entries(env).map(([key, value]) => [`import.meta.env.${key}`, JSON.stringify(value)]),
+  );
+  const r2Endpoint = resolveR2Endpoint(allEnv);
+  envDefine["import.meta.env.R2_ENDPOINT"] = JSON.stringify(r2Endpoint);
+
+  const securityHeaders = buildSecurityHeaders({
+    environment: env.VITE_ENVIRONMENT,
+    development: command === "serve",
+    r2PublicBaseUrl: env.VITE_R2_PUBLIC_BASE_URL,
+    r2Endpoint,
+    supabaseUrl: env.VITE_SUPABASE_URL,
+  });
+  // CSP is request-specific for SSR: `cspNonceMiddleware` in `src/start.ts`
+  // sets it with a nonce (`src/server.ts` only adds a nonce-less fallback).
+  // Keeping a static CSP route rule would let Nitro overwrite that nonce on
+  // the outer response.
+  const staticSecurityHeaders = Object.fromEntries(
+    Object.entries(securityHeaders).filter(([name]) => name !== "content-security-policy"),
+  );
+
+  // Attribution øverst i hver bygde JS-fil (se plugin-listen under), doblet
+  // som AGPL §13-kildehenvisning. `/*!` gjør den til en legal comment, som
+  // `comments.legal` under sørger for at minifikatoren i klientbygget beholder
+  // — uten den strippes alle kommentarer, også tredjepartenes @license.
+  const attributionBanner = `/*! Powered by ${POWERED_BY} */`;
+
+  return {
+    define: envDefine,
+    environments: {
+      client: {
+        // start-client-core må serveres gjennom Vites transform-pipeline, ikke
+        // prebundles. Start-pluginen kompilerer bort server-grenen i
+        // createIsomorphicFn() (bl.a. getGlobalStartContext), og den
+        // transformen kjører ikke på moduler som havner i .vite/deps. Da
+        // overlever `import { AsyncLocalStorage } from "node:async_hooks"` via
+        // @tanstack/start-storage-context inn i nettleserbunten, og
+        // klientinngangen krasjer før hydrering — appen blir stående tom.
+        //
+        // `include`: Vites innledende skanning finner nesten ingen av disse (inngangen
+        // er virtuell), så de oppdages først når en rute som bruker dem lastes. Hver
+        // sen oppdagelse re-optimaliserer og gir «504 Outdated Optimize Dep» på moduler
+        // nettleseren allerede har lastet — det avbrøt E2E-kjøringer i CI (ferske
+        // dev-servere uten .vite-cache). Listen er hentet fra dev-serverens
+        // «dependencies optimized»-logg; legg til nye klientpakker her ved behov.
+        optimizeDeps: {
+          exclude: ["@tanstack/start-client-core", "cloudflare:workers"],
+          include: [
+            "@capacitor/app",
+            "@capacitor/camera",
+            "@capacitor/core",
+            "@capacitor/geolocation",
+            "@capacitor/haptics",
+            "@capacitor/keyboard",
+            "@capacitor/push-notifications",
+            "@capacitor/screen-orientation",
+            "@capacitor/share",
+            "@capacitor/splash-screen",
+            "@capacitor/status-bar",
+            "@dnd-kit/core",
+            "@dnd-kit/sortable",
+            "@dnd-kit/utilities",
+            "@hookform/resolvers/zod",
+            "@radix-ui/react-alert-dialog",
+            "@radix-ui/react-avatar",
+            "@radix-ui/react-checkbox",
+            "@radix-ui/react-collapsible",
+            "@radix-ui/react-dialog",
+            "@radix-ui/react-dropdown-menu",
+            "@radix-ui/react-label",
+            "@radix-ui/react-popover",
+            "@radix-ui/react-progress",
+            "@radix-ui/react-radio-group",
+            "@radix-ui/react-scroll-area",
+            "@radix-ui/react-select",
+            "@radix-ui/react-slider",
+            "@radix-ui/react-slot",
+            "@radix-ui/react-switch",
+            "@radix-ui/react-tabs",
+            "@supabase/ssr",
+            "@supabase/supabase-js",
+            "@tanstack/history",
+            "@tanstack/react-query",
+            "@tanstack/router-core",
+            "@tanstack/router-core/isServer",
+            "@tanstack/router-core/ssr/client",
+            "@tanstack/router-core/ssr/server",
+            "browser-image-compression",
+            "canvas-confetti",
+            "class-variance-authority",
+            "clsx",
+            "cmdk",
+            "date-fns",
+            "date-fns/locale",
+            "embla-carousel-react",
+            "lucide-react",
+            "qrcode/lib/browser.js",
+            "react-day-picker",
+            "react-day-picker/locale",
+            "react-hook-form",
+            "seroval",
+            "sonner",
+            "tailwind-merge",
+            "vaul",
+            "zod",
+          ],
+        },
+        build: {
+          rolldownOptions: {
+            output: { comments: { legal: true, annotation: false, jsdoc: false } },
+          },
+        },
+      },
+    },
+    build: {
+      rolldownOptions: {
+        output: {
+          // Keep large third-party packages out of the application entry
+          // without grouping application modules into a circular initial chunk.
+          codeSplitting: {
+            maxSize: 450 * 1024,
+            groups: [
+              {
+                name: "lucide-icons",
+                test: /node_modules[\\/]lucide-react/,
+                includeDependenciesRecursively: false,
+                maxSize: 450 * 1024,
+                priority: 20,
+              },
+              {
+                name: "tanstack-router",
+                test: /node_modules[\\/]@tanstack[\\/](?:react-router|router-core|history)/,
+                includeDependenciesRecursively: false,
+                maxSize: 450 * 1024,
+                priority: 15,
+              },
+              {
+                // seroval deserializes every serverFn response on the client and
+                // has a multi-level Error class hierarchy (SerovalError extends
+                // Error, SerovalParserError extends SerovalError, etc). Splitting
+                // it across chunks without a guaranteed load order caused
+                // "Cannot read properties of undefined (reading 'extends')"
+                // crashes while parsing responses for the profile page's widgets.
+                name: "seroval",
+                test: /node_modules[\\/]seroval(-plugins)?[\\/]/,
+                includeDependenciesRecursively: true,
+                maxSize: 450 * 1024,
+                priority: 15,
+              },
+            ],
+          },
+        },
+      },
+    },
+    // Vite uses PostCSS in dev and only runs Lightning CSS at build time;
+    // running it in both keeps the dev preview consistent with the built
+    // output (e.g. -webkit-backdrop-filter prefixing isn't dropped silently).
+    css: { transformer: "lightningcss" },
+    resolve: {
+      alias: { "@": `${process.cwd()}/src` },
+      tsconfigPaths: true,
+      dedupe: [
+        "react",
+        "react-dom",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+        "@tanstack/react-query",
+        "@tanstack/query-core",
+      ],
+    },
+    server: { host: "::", port: 8080 },
+    plugins: [
+      {
+        name: "kaupet-attribution-banner",
+        enforce: "post" as const,
+        renderChunk(code: string) {
+          return code.startsWith("/*!") ? null : `${attributionBanner}\n${code}`;
+        },
+      },
+      tailwindcss(),
+      tanstackStart({
+        importProtection: {
+          behavior: "error",
+          client: {
+            files: ["**/server/**", "**/*.server.ts", "**/*.server.tsx"],
+            specifiers: ["server-only"],
+          },
+        },
+        // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
+        server: { entry: "server" },
+      }),
+      ...(command === "build"
+        ? [
+            nitro({
+              preset: NITRO_PRESET,
+              // Keep the generated Worker config on a runtime supported by
+              // the Wrangler version in the lockfile. Nitro's default of
+              // today's date can be one day ahead of workerd in CI.
+              compatibilityDate: "2026-08-27",
+              output: { dir: "dist", serverDir: "dist/server", publicDir: "dist/client" },
+              // fetch these extensionless files and expect JSON — Cloudflare's
+              // static asset serving would otherwise guess a generic content
+              // type from the missing file extension.
+              routeRules: {
+                "/assets/**": { headers: securityHeaders },
+                "/**": { headers: staticSecurityHeaders },
+              },
+              cloudflare: {
+                nodeCompat: true,
+                deployConfig: true,
+                // Wrangler's redirected-config mode (used by Nitro's
+                // deployConfig) rejects `env.*` blocks, so the worker name
+                // for non-prod targets is selected via env var instead.
+                wrangler: {
+                  name: process.env.CLOUDFLARE_WORKER_NAME || "marketplace",
+                  observability: { enabled: true },
+                },
+              },
+            }),
+          ]
+        : []),
+      viteReact(),
+    ],
+  };
+});

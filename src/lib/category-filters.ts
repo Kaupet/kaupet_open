@@ -1,0 +1,746 @@
+import { format, isValid, parse } from "date-fns";
+import { z } from "zod";
+import { getCategoryBehavior } from "@/lib/category-behavior";
+import { parseNumericString } from "@/lib/numeric-string";
+
+export { parseNumericString };
+
+/** Minimal category shape needed for filter inheritance (avoids requiring slug/name). */
+export type CategoryNode = { id: string; parent_id: string | null };
+
+/** Free-form per-category attribute values keyed by category_filters.key. */
+export const attributesSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean(), z.array(z.string())], {
+    error: "Ugyldig attributtverdi.",
+  }),
+);
+
+/** Attributes stored on bildelannonser for seller-declared fitment. */
+export const PART_FITMENT_SCOPE_KEY = "part_fitment_scope";
+export const PART_FITMENT_MODEL_IDS_KEY = "part_fitment_vehicle_ids";
+export const PART_FITMENT_YEAR_KEY = "part_fitment_year";
+export const PART_FITMENT_YEAR_FROM_KEY = "part_fitment_year_from";
+export const PART_FITMENT_YEAR_TO_KEY = "part_fitment_year_to";
+export const PART_NUMBER_KEY = "part_number";
+export const PART_BRAND_KEY = "part_brand";
+export type FilterType =
+  | "select"
+  | "multiselect"
+  | "number"
+  | "range"
+  | "boolean"
+  | "text"
+  /** Avhengige nedtrekkslister (f.eks. merke og modell). Verdiene kommer fra
+   * vertikalens verdilister (Verticals.brandModel), ikke fra `options`.
+   * `unit` på foreldrefilteret navngir verdigruppen (ValueGroup). */
+  | "parent_select"
+  | "child_select"
+  /** ISO-dato (`yyyy-MM-dd`) med datovelger; søkes som tidligste dato (`date_min`). */
+  | "date";
+
+export type FilterOption = { value: string; label_nb: string };
+
+/** `category_filters` keys of type `"select"` where a listing carries one
+ * value (a car has one body style/color/fuel type) but a buyer searching
+ * should still be able to check several allowed values at once — rendered
+ * as a checkbox list in the search UI (attribute-filter-chips.tsx,
+ * category-filter-fields.tsx) while attribute-fields.tsx (listing creation)
+ * keeps rendering the same `type: "select"` row as a single-value dropdown,
+ * since that form is unaffected by this key list. */
+export const SEARCH_MULTISELECT_KEYS: readonly string[] = ["body_type", "color", "fuel_type"];
+
+/** Max digits allowed in the creation-flow input for numeric attribute keys
+ * with a naturally bounded magnitude (a year has 4 digits, a boat length 3).
+ * Keys not listed are unrestricted. Enforced by AttributeFields' number
+ * input; keyed by category_filters.key so it applies across categories. */
+export const NUMERIC_DIGIT_CAPS: Record<string, number> = {
+  year: 4,
+  length_ft: 3,
+  engine_hours: 8,
+  power_hk: 4,
+  hestekrefter: 4,
+  max_speed_knots: 3,
+  sleeping_places: 2,
+  seats: 3,
+  width_cm: 4,
+  height_cm: 4,
+  depth_cm: 4,
+  length_cm: 4,
+  weight_kg: 7,
+};
+
+/** Dimension values describe a physical size and must be greater than zero. */
+export const POSITIVE_NUMERIC_ATTRIBUTE_KEYS: readonly string[] = [
+  "width_cm",
+  "height_cm",
+  "depth_cm",
+  "length_cm",
+];
+
+/** Navnet på en verdigruppe for `parent_select`, lagret i filterets `unit`.
+ * Kjernen kjenner ikke gruppene; vertikalen som leverer verdilistene gjør det. */
+export type ValueGroup = string;
+
+/** Eldre navn på filtertypene, som databasen kan ha til migrasjonen
+ * 20261026130000_category_filter_parent_child_select_finalize.sql er
+ * anvendt. Kan fjernes da. */
+/* eslint-disable no-restricted-syntax -- Unntak fra kjøretøysperren:
+   databasens gamle verdier må kunne leses til migrasjonen er anvendt. */
+const LEGACY_FILTER_TYPES: Record<string, FilterType> = {
+  brand_select: "parent_select",
+  model_select: "child_select",
+};
+/* eslint-enable no-restricted-syntax */
+
+export type CategoryFilter = {
+  id: string;
+  category_id: string;
+  key: string;
+  label_nb: string;
+  type: FilterType;
+  unit: string | null;
+  options: FilterOption[] | null;
+  sort_order: number;
+  is_primary: boolean;
+  /** When set, this filter is only shown/required once the filter with key
+   * `depends_on_key` on the same category has the value `depends_on_value`
+   * (compared as a string). Null means always shown. */
+  depends_on_key: string | null;
+  depends_on_value: string | null;
+  /** Inverse dependency: only shown/required while the `depends_on_key`
+   * filter does NOT have this value — e.g. boat Drivstoff/Hestekrefter/
+   * Maksfart hidden once Motortype = "uten_motor". */
+  depends_on_not_value: string | null;
+  /** Shown in the creation flow but never required (e.g. boat Driftstimer). */
+  is_optional: boolean;
+};
+
+export const FILTER_TYPE_LABELS: Record<FilterType, string> = {
+  select: "Valg (én)",
+  multiselect: "Valg (flere)",
+  number: "Tall",
+  range: "Tallområde (fra–til)",
+  boolean: "Ja/nei",
+  text: "Fritekst",
+  parent_select: "Merke (koblet liste)",
+  child_select: "Modell (koblet liste)",
+  date: "Dato",
+};
+
+/** Coerces a raw DB row (options is JSONB) into a typed CategoryFilter. */
+export function normalizeFilter(row: {
+  id: string;
+  category_id: string;
+  key: string;
+  label_nb: string;
+  type: string;
+  unit: string | null;
+  options: unknown;
+  sort_order: number;
+  is_primary: boolean;
+  depends_on_key?: string | null;
+  depends_on_value?: string | null;
+  depends_on_not_value?: string | null;
+  is_optional?: boolean;
+}): CategoryFilter {
+  return {
+    id: row.id,
+    category_id: row.category_id,
+    key: row.key,
+    label_nb: row.label_nb,
+    type: LEGACY_FILTER_TYPES[row.type] ?? (row.type as FilterType),
+    unit: row.unit,
+    options: Array.isArray(row.options) ? (row.options as FilterOption[]) : null,
+    sort_order: row.sort_order,
+    is_primary: row.is_primary,
+    depends_on_key: row.depends_on_key ?? null,
+    depends_on_value: row.depends_on_value ?? null,
+    depends_on_not_value: row.depends_on_not_value ?? null,
+    is_optional: row.is_optional ?? false,
+  };
+}
+
+/**
+ * En avhengighet uten verdi (`depends_on_key` satt, begge verdiene null) gjør
+ * filteret til et alternativ til feltet det peker på — f.eks. «Mangler
+ * EU-kontroll» for Neste EU-kontroll. Alternativet gjelder når feltet er tomt
+ * eller en passert dato, og et valgt alternativ gjør feltet ikke påkrevd.
+ * Et datofelt med alternativer er en frist: en passert dato teller som ubesvart.
+ */
+export function isAlternativeFilter(
+  filter: Pick<CategoryFilter, "depends_on_key" | "depends_on_value" | "depends_on_not_value">,
+): boolean {
+  return (
+    !!filter.depends_on_key &&
+    filter.depends_on_value == null &&
+    filter.depends_on_not_value == null
+  );
+}
+
+/** Dagens dato som ISO (`yyyy-MM-dd`) i norsk tid — samme «i dag» som
+ * EU-triggeren i databasen, også i workeren som går i UTC. */
+export function todayIsoDate(): string {
+  return new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Oslo" });
+}
+
+function hasAttributeValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function isPassedDate(value: unknown): boolean {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && value < todayIsoDate();
+}
+
+/** Returns whether a filter's dependency (if any) is satisfied by the current
+ * attribute values — e.g. Motorsport's "Gren"/"Klasse" only apply once
+ * "Er bilen lisensiert?" is true. Filters without a dependency always apply. */
+export function filterDependencyMet(
+  filter: Pick<CategoryFilter, "depends_on_key" | "depends_on_value" | "depends_on_not_value">,
+  attributes: Record<string, AttributeValue>,
+): boolean {
+  if (!filter.depends_on_key) return true;
+  if (isAlternativeFilter(filter)) {
+    const parent = attributes[filter.depends_on_key];
+    return parent === undefined || parent === null || parent === "" || isPassedDate(parent);
+  }
+  if (filter.depends_on_not_value != null) {
+    return String(attributes[filter.depends_on_key]) !== filter.depends_on_not_value;
+  }
+  return String(attributes[filter.depends_on_key]) === filter.depends_on_value;
+}
+
+/**
+ * Search-side counterpart of `filterDependencyMet`: reads the dependency off
+ * the filter values a search holds instead of a listing's attributes. A
+ * `child_select` (Modell) has no explicit dependency row but is meaningless
+ * without a `parent_select` (Merke) value in `filters`, so it counts as
+ * dependent too.
+ */
+export function searchFilterDependencyMet(
+  filter: CategoryFilter,
+  values: Record<string, AttributeFilterValue>,
+  filters: CategoryFilter[],
+): boolean {
+  if (filter.type === "child_select") {
+    const brand = filters.find((candidate) => candidate.type === "parent_select");
+    if (brand && !values[brand.key]) return false;
+  }
+  if (!filter.depends_on_key) return true;
+  const parent = values[filter.depends_on_key];
+  const raw =
+    parent && "value" in parent && typeof parent.value !== "object" ? parent.value : undefined;
+  return filterDependencyMet(filter, raw === undefined ? {} : { [filter.depends_on_key]: raw });
+}
+
+/** Whether `filter`'s own options actually contain the value(s) held in
+ * `value` — used to disambiguate a shared attribute key (e.g. "fuel_type")
+ * between categories that define completely different vocabularies for it.
+ * Kinds without an option list (boolean/text/range) have nothing to
+ * validate against, so they're treated as a match by default. */
+export function searchFilterMatchesValue(
+  filter: CategoryFilter,
+  value: AttributeFilterValue | undefined,
+): boolean {
+  if (!value) return false;
+  // Merke og modell har ingen statisk opsjonsliste; verdiene kommer fra
+  // vertikalens verdilister og skal ikke valideres mot `options`.
+  if (filter.type === "parent_select" || filter.type === "child_select") return true;
+  if (value.kind === "select") return !!filter.options?.some((o) => o.value === value.value);
+  if (value.kind === "multiselect" || value.kind === "exclude") {
+    return value.values.every((v) => filter.options?.some((o) => o.value === v));
+  }
+  return true;
+}
+
+/**
+ * Keeps the search filter values that still apply under `filters`. Values
+ * with invalid options or dependencies are dropped until stable, so clearing Merke
+ * also clears Modell. With `dropUnknown`, keys `filters` doesn't define are
+ * dropped too — used when the category changes, so Farge survives a switch
+ * between two categories that both have it while Rammestørrelse does not.
+ */
+export function retainSearchAttributes(
+  values: Record<string, AttributeFilterValue>,
+  filters: CategoryFilter[],
+  { dropUnknown = false }: { dropUnknown?: boolean } = {},
+): { kept: Record<string, AttributeFilterValue>; dropped: string[] } {
+  const byKey = new Map(filters.map((filter) => [filter.key, filter]));
+  return pruneUntilStable(values, (key, kept) => {
+    const filter = byKey.get(key);
+    return filter
+      ? searchFilterMatchesValue(filter, kept[key]) &&
+          searchFilterDependencyMet(filter, kept, filters)
+      : !dropUnknown;
+  });
+}
+
+/** Fjerner verdier `keep` avviser, gjentatt til resultatet er stabilt: en
+ * fjernet forutsetning kan gjøre et avhengig filter ugyldig. Felles for søk
+ * (retainSearchAttributes) og kjøpsønsker (pruneWtbCriteria). */
+export function pruneUntilStable<V>(
+  values: Record<string, V>,
+  keep: (key: string, kept: Record<string, V>) => boolean,
+): { kept: Record<string, V>; dropped: string[] } {
+  const kept = { ...values };
+  const dropped: string[] = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const key of Object.keys(kept)) {
+      if (keep(key, kept)) continue;
+      delete kept[key];
+      dropped.push(key);
+      changed = true;
+    }
+  }
+  return { kept, dropped };
+}
+
+/**
+ * Splits an already-resolved filter list into those always shown on the
+ * landing/category filter panel vs. those tucked behind "Se flere valg".
+ */
+export function splitPrimaryFilters(filters: CategoryFilter[]): {
+  primary: CategoryFilter[];
+  secondary: CategoryFilter[];
+} {
+  return {
+    primary: filters.filter((f) => f.is_primary),
+    secondary: filters.filter((f) => !f.is_primary),
+  };
+}
+
+/**
+ * Applies a single attribute-filter change to a values map, used by every
+ * `CategoryFilterFields` `onChange` handler (landing page, category page).
+ * Removes the key entirely when the value is cleared, so empty filters don't
+ * linger in the query/search state.
+ */
+export function setAttributeFilterValue(
+  values: Record<string, AttributeFilterValue>,
+  key: string,
+  value: AttributeFilterValue | undefined,
+): Record<string, AttributeFilterValue> {
+  const next = { ...values };
+  if (value === undefined) delete next[key];
+  else next[key] = value;
+  return next;
+}
+
+/**
+ * Returns the filters that apply to a category: its own filters plus those
+ * inherited from its parent (so a filter defined on a main category is shared
+ * by all its subcategories). Sorted by sort_order, deduped by key (the more
+ * specific child filter wins over an inherited parent filter with the same key).
+ */
+export function effectiveFiltersForCategory(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+): CategoryFilter[] {
+  if (!categoryId) return [];
+  const applicableCategoryIds = new Set<string>();
+  let cur: CategoryNode | undefined = categoriesById.get(categoryId);
+  while (cur) {
+    applicableCategoryIds.add(cur.id);
+    cur = cur.parent_id ? categoriesById.get(cur.parent_id) : undefined;
+  }
+  const byKey = new Map<string, CategoryFilter>();
+  // Walk from least specific (parent) to most specific so children override.
+  const ordered = allFilters
+    .filter((f) => applicableCategoryIds.has(f.category_id))
+    .sort(
+      (a, b) => depthOf(a.category_id, categoriesById) - depthOf(b.category_id, categoriesById),
+    );
+  for (const f of ordered) byKey.set(f.key, f);
+  const filters = Array.from(byKey.values());
+  const behavior = getCategoryBehavior(valueGroupOf(filters));
+  const legacyKeys = new Set(
+    behavior.legacyFilterAliases.filter((a) => byKey.has(a.replacementKey)).map((a) => a.key),
+  );
+  return filters.filter((f) => !legacyKeys.has(f.key)).sort((a, b) => a.sort_order - b.sort_order);
+}
+
+/** Eldre importdata kan ha tallstrenger. Bare kategoriens effektive
+ * tallfelt konverteres; tekstvalg og ugyldige tall beholdes for validering. */
+export function normalizeNumericAttributes<T>(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+  attributes: Record<string, T>,
+): Record<string, T | number> {
+  const normalized: Record<string, T | number> = { ...attributes };
+  for (const filter of effectiveFiltersForCategory(categoryId, allFilters, categoriesById)) {
+    const value = normalized[filter.key];
+    if ((filter.type !== "number" && filter.type !== "range") || typeof value !== "string") {
+      continue;
+    }
+    const parsed = parseNumericString(value);
+    if (parsed !== null) normalized[filter.key] = parsed;
+  }
+  return normalized;
+}
+
+/** Et attributt som lagres som ISO-dato (`yyyy-MM-dd`). */
+export type DateAttribute = { key: string; label_nb: string };
+
+const ISO_DATE = "yyyy-MM-dd";
+/** Excel lagrer datoer som dager siden 1899-12-30. */
+const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 30);
+
+function toIsoDate(value: unknown): string | null {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 1 || value > 2_958_465) return null;
+    return new Date(EXCEL_EPOCH_UTC + value * 86_400_000).toISOString().slice(0, 10);
+  }
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  // Filparseren leser også numeriske Excel-/CSV-celler som tekst.
+  if (/^\d+$/.test(text)) return toIsoDate(Number(text));
+  for (const pattern of [ISO_DATE, "d.M.yyyy"]) {
+    const parsed = parse(text, pattern, new Date(2000, 0, 1));
+    // `parse` godtar f.eks. «2027-5-1»; krev at formatet faktisk stemmer.
+    if (isValid(parsed) && /^\d{4}-\d{2}-\d{2}$|^\d{1,2}\.\d{1,2}\.\d{4}$/.test(text)) {
+      return format(parsed, ISO_DATE);
+    }
+  }
+  return null;
+}
+
+/** Datoattributtene for en kategori: filtre av typen `date`, pluss
+ * attributter uten filterrad som kategorien selv lagrer som dato
+ * (`CategoryBehavior.extraDateAttributes`). */
+function dateAttributesForCategory(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+  extra: readonly DateAttribute[],
+): DateAttribute[] {
+  return [
+    ...effectiveFiltersForCategory(categoryId, allFilters, categoriesById).filter(
+      (f) => f.type === "date",
+    ),
+    ...extra,
+  ];
+}
+
+/** Gjør om datoattributter fra import (ISO, `31.12.2027`, Excel-serienummer)
+ * til ISO. Verdier som ikke kan tolkes står urørt, så
+ * `findInvalidDateAttribute` kan avvise dem med en tydelig melding. */
+export function normalizeDateAttributes<T>(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+  attributes: Record<string, T>,
+  extra: readonly DateAttribute[] = [],
+): Record<string, T | string> {
+  const normalized: Record<string, T | string> = { ...attributes };
+  for (const { key } of dateAttributesForCategory(categoryId, allFilters, categoriesById, extra)) {
+    const iso = toIsoDate(normalized[key]);
+    if (iso) normalized[key] = iso;
+  }
+  return normalized;
+}
+
+/** Første datoattributt som har en verdi, men ikke er en gyldig ISO-dato.
+ * Ugyldige datoer ødela tidligere visning og matching nedstrøms. */
+export function findInvalidDateAttribute(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+  attributes: Record<string, unknown>,
+  extra: readonly DateAttribute[] = [],
+): DateAttribute | null {
+  return (
+    dateAttributesForCategory(categoryId, allFilters, categoriesById, extra).find(({ key }) => {
+      const value = attributes[key];
+      if (value === undefined || value === null || value === "") return false;
+      return typeof value !== "string" || toIsoDate(value) !== value;
+    }) ?? null
+  );
+}
+
+/**
+ * Første tallfelt (filtertype range/number) som har en verdi som ikke er et
+ * endelig tall. Feltet må kunne brukes som tall i søk og filtre.
+ */
+export function findNonNumericAttribute(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+  attributes: Record<string, unknown>,
+): CategoryFilter | null {
+  return (
+    effectiveFiltersForCategory(categoryId, allFilters, categoriesById).find((f) => {
+      if (f.type !== "range" && f.type !== "number") return false;
+      const v = attributes[f.key];
+      return v !== undefined && v !== null && (typeof v !== "number" || !Number.isFinite(v));
+    }) ?? null
+  );
+}
+
+/**
+ * Returns the effective filters (excluding "range", which is search-only)
+ * that don't yet have a value in `attributes`. Used to require filter values
+ * to be filled in before a listing can be published/saved.
+ */
+export function getMissingRequiredFilters(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+  attributes: Record<string, AttributeValue>,
+  excludeKeys?: readonly string[],
+): CategoryFilter[] {
+  const excluded = excludeKeys ? new Set(excludeKeys) : null;
+  const effective = effectiveFiltersForCategory(categoryId, allFilters, categoriesById);
+  const behavior = getCategoryBehavior(valueGroupOf(effective));
+  attributes = { ...attributes };
+  for (const alias of behavior.legacyFilterAliases) {
+    if (attributes[alias.replacementKey] == null && attributes[alias.key] === alias.value) {
+      attributes[alias.replacementKey] = alias.replacementValue;
+    }
+  }
+  const alternatives = effective.filter(isAlternativeFilter);
+  const answeredByAlternative = new Set(
+    alternatives
+      .filter((a) => filterDependencyMet(a, attributes) && hasAttributeValue(attributes[a.key]))
+      .map((a) => a.depends_on_key),
+  );
+  const hasAlternatives = (key: string) => alternatives.some((a) => a.depends_on_key === key);
+  const filters = effective.filter(
+    // "range" is search-only, and "registration_number" is set by the
+    // vehicle wizard itself (SVV lookup, or left unset for a manually
+    // entered unregistered vehicle) rather than filled in by the user as a
+    // generic attribute. "boolean" is included — it's rendered as an
+    // explicit Ja/Nei choice (see AttributeField), so `false` is a real
+    // answer distinguishable from unanswered (`undefined`).
+    (f) =>
+      f.type !== "range" &&
+      !f.is_optional &&
+      f.key !== "registration_number" &&
+      !excluded?.has(f.key) &&
+      !answeredByAlternative.has(f.key) &&
+      filterDependencyMet(f, attributes),
+  );
+  return filters.filter((f) => {
+    const v = attributes[f.key];
+    if (v === undefined || v === null) return true;
+    if (
+      POSITIVE_NUMERIC_ATTRIBUTE_KEYS.includes(f.key) &&
+      (typeof v !== "number" || !Number.isFinite(v) || v <= 0)
+    ) {
+      return true;
+    }
+    // En ugyldig dato (fra gammel fritekst) vises tom i datovelgeren; da
+    // skal den også telle som ikke utfylt.
+    if (f.type === "date") {
+      return toIsoDate(v) !== v || (hasAlternatives(f.key) && isPassedDate(v));
+    }
+    if (typeof v === "string") return v.trim() === "";
+    if (Array.isArray(v)) return v.length === 0;
+    return false;
+  });
+}
+
+/**
+ * Effective filters for a multi-category selection (e.g. the /annonser
+ * category picker, which allows selecting several categories at once):
+ * returns only filters common to every selected category (by key), since a
+ * Bil-only field like "hestekrefter" doesn't make sense once "MC" is also
+ * selected. Returns [] when no category is selected — attribute filters
+ * only apply within a category context.
+ */
+export function effectiveFiltersForCategories(
+  categoryIds: string[],
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+): CategoryFilter[] {
+  if (categoryIds.length === 0) return [];
+  const perCategory = categoryIds.map((id) =>
+    effectiveFiltersForCategory(id, allFilters, categoriesById),
+  );
+  const [first, ...rest] = perCategory;
+  const commonKeys = new Set(first.map((f) => f.key));
+  for (const filters of rest) {
+    const keys = new Set(filters.map((f) => f.key));
+    for (const k of Array.from(commonKeys)) if (!keys.has(k)) commonKeys.delete(k);
+  }
+  return first.filter((f) => commonKeys.has(f.key)).sort((a, b) => a.sort_order - b.sort_order);
+}
+
+/** Verdigruppen til `parent_select`-filteret blant `filters`, eller null. */
+export function valueGroupOf(filters: CategoryFilter[]): ValueGroup | null {
+  return filters.find((f) => f.type === "parent_select")?.unit ?? null;
+}
+
+/**
+ * Returns the value group a category's `parent_select` filter reads from, or
+ * null if the category has none. The group decides which registered vertical
+ * owns the category (getCategoryBehavior) — driven by admin-configured
+ * category_filters, not a hardcoded category name/slug.
+ */
+export function valueGroupFor(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+): ValueGroup | null {
+  return valueGroupOf(effectiveFiltersForCategory(categoryId, allFilters, categoriesById));
+}
+
+/**
+ * Returns every category whose `parent_select` filter reads from `group` —
+ * i.e. the category/categories a value in that group belongs to. Computed
+ * live from `valueGroupFor` rather than a hardcoded `group -> slug` table, so
+ * it stays correct as the category tree is restructured. A group can cover
+ * more than one category, so callers that need a single answer must
+ * disambiguate among the results themselves.
+ */
+export function categoriesForValueGroup<T extends { id: string; slug: string; name_nb: string }>(
+  group: ValueGroup,
+  categories: T[],
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+): T[] {
+  return categories.filter((c) => valueGroupFor(c.id, allFilters, categoriesById) === group);
+}
+
+/**
+ * Returns the category's plain "brand" filter — a text/select attribute
+ * keyed "brand" — or null if the category has none. Distinct from
+ * `parent_select`, whose values come from a registered vertical's lists.
+ */
+export function genericBrandFilterFor(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+): CategoryFilter | null {
+  const filters = effectiveFiltersForCategory(categoryId, allFilters, categoriesById);
+  return (
+    filters.find((f) => f.key === "brand" && (f.type === "text" || f.type === "select")) ?? null
+  );
+}
+/** Båt-kategorier arver `boat_type` fra Båter-flyten. Filteret er kategoriens
+ * autoritative kilde; lagrede annonseattributter og feltgrupperekkefølge kan
+ * være ufullstendige. */
+export function isBoatCategory(
+  categoryId: string | null,
+  allFilters: CategoryFilter[],
+  categoriesById: Map<string, CategoryNode>,
+): boolean {
+  return effectiveFiltersForCategory(categoryId, allFilters, categoriesById).some(
+    (filter) => filter.key === "boat_type",
+  );
+}
+
+/**
+ * Builds a " › "-separated breadcrumb label for a category by walking up its
+ * parent chain, e.g. "Elektronikk › TV og lyd › TV". Works for any depth.
+ */
+export function categoryBreadcrumb<
+  T extends { id: string; parent_id: string | null; name_nb: string },
+>(categoryId: string | null, categoriesById: Map<string, T>): string {
+  if (!categoryId) return "";
+  const path: string[] = [];
+  let cur = categoriesById.get(categoryId);
+  while (cur) {
+    path.unshift(cur.name_nb);
+    cur = cur.parent_id ? categoriesById.get(cur.parent_id) : undefined;
+  }
+  return path.join(" › ");
+}
+
+function depthOf(categoryId: string, categoriesById: Map<string, CategoryNode>): number {
+  let depth = 0;
+  let cur = categoriesById.get(categoryId);
+  while (cur?.parent_id) {
+    depth += 1;
+    cur = categoriesById.get(cur.parent_id);
+  }
+  return depth;
+}
+
+export type AttributeValue = string | number | boolean | string[];
+export type AttributeFilterValue =
+  | { kind: "select"; value: string }
+  | { kind: "multiselect"; values: string[] }
+  | { kind: "boolean"; value: boolean }
+  | { kind: "range"; min?: number; max?: number }
+  | { kind: "text"; value: string }
+  /** Earliest-acceptable ISO date (`yyyy-MM-dd`) — currently only used by
+   * filters of type `date` (e.g. `next_eu_control`), matching listings whose
+   * date is on or after this one. Mirrors WtbDateMinValue's "minDate"
+   * semantics (wtb-criteria-types.ts) for a sell-listing search filter. */
+  | { kind: "date_min"; value: string }
+  /** Excludes listings whose attribute equals any of `values` — a listing
+   * with no value for this key is kept (e.g. "ikke elbil" shouldn't hide
+   * listings that never set `fuel_type`). Currently only produced by the
+   * free-text negation matcher (search-negation.ts) for select/multiselect
+   * filters. */
+  | { kind: "exclude"; values: string[] };
+
+/**
+ * Applies attribute filter predicates to a Supabase query on a table that has a
+ * JSONB `attributes` column. Uses containment for select/boolean and JSONB
+ * path casts for numeric range comparisons.
+ */
+// `query` is a Supabase PostgrestFilterBuilder; typed as any to avoid wrestling
+// the deeply-generic builder type at every call site.
+export function applyAttributeFilters<T>(
+  query: T,
+  filters: Record<string, AttributeFilterValue>,
+): T {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let q = query as any;
+  for (const [key, f] of Object.entries(filters)) {
+    switch (f.kind) {
+      case "select":
+        if (f.value) q = q.contains("attributes", { [key]: f.value });
+        break;
+      case "boolean":
+        q = q.contains("attributes", { [key]: f.value });
+        break;
+      case "multiselect":
+        // Part fitment is stored as an array of model IDs. The search-side
+        // control intentionally selects one buyer vehicle, so JSONB contains
+        // is the exact predicate needed here; ordinary filters keep their
+        // existing scalar-any behavior.
+        if (f.values.length > 0) {
+          if (key === PART_FITMENT_MODEL_IDS_KEY) {
+            q = q.contains("attributes", { [key]: f.values });
+          } else {
+            const ors = f.values.map((v) => `attributes->>${key}.eq.${v}`).join(",");
+            q = q.or(ors);
+          }
+        }
+        break;
+      case "range":
+        // `->>` extracts JSON as text, so PostgREST compares it lexicographically
+        // against the number ("78000" >= "100000" is true as text, since '7' > '1') —
+        // `->` keeps it as jsonb instead, which numeric attribute values are always
+        // stored as, so Postgres compares them numerically like the filter intends.
+        if (typeof f.min === "number") q = q.gte(`attributes->${key}`, f.min);
+        if (typeof f.max === "number") q = q.lte(`attributes->${key}`, f.max);
+        break;
+      case "text":
+        if (f.value) q = q.ilike(`attributes->>${key}`, `%${f.value}%`);
+        break;
+      case "date_min":
+        // `->>` (text) is correct here, unlike the numeric "range" case above —
+        // ISO `yyyy-MM-dd` strings sort chronologically under plain text
+        // comparison, so no jsonb-numeric cast is needed.
+        if (f.value) q = q.gte(`attributes->>${key}`, f.value);
+        break;
+      case "exclude":
+        // Keep listings that never set this attribute — only exclude ones
+        // that explicitly match one of the excluded values.
+        if (f.values.length > 0) {
+          q = q.or(
+            `attributes->>${key}.is.null,attributes->>${key}.not.in.(${f.values.join(",")})`,
+          );
+        }
+        break;
+    }
+  }
+  return q as T;
+}

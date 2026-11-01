@@ -1,0 +1,36 @@
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/server-error-log", () => ({ logServerError: vi.fn().mockResolvedValue(undefined) }));
+
+import { logServerError } from "@/lib/server-error-log";
+import { isAlreadyLogged, markLogged, toClientError } from "./to-client-error";
+
+describe("toClientError", () => {
+  it("logs the real error and returns a generic message for an unknown code", async () => {
+    const raw = { message: 'column "seller_id" does not exist', code: "42703" };
+    const err = await toClientError("someFn", raw, { listing_id: "abc" });
+    expect(logServerError).toHaveBeenCalledWith("someFn", raw, { listing_id: "abc" });
+    expect(err.message).toBe("Noe gikk galt. Prøv igjen senere.");
+    expect(err.message).not.toContain("seller_id");
+  });
+
+  it("returns a safe, specific message for a known code (unique_violation)", async () => {
+    const err = await toClientError("someFn", { message: "duplicate key", code: "23505" });
+    expect(err.message).toBe("Finnes allerede.");
+  });
+
+  it("marks the returned error as already logged so the serverFn middleware skips it", async () => {
+    const err = await toClientError("someFn", new Error("boom"));
+    expect(isAlreadyLogged(err)).toBe(true);
+    expect(isAlreadyLogged(new Error("boom"))).toBe(false);
+  });
+});
+
+describe("markLogged", () => {
+  it("marks the error as logged and returns the same object", () => {
+    const err = new Error("boom");
+    expect(isAlreadyLogged(err)).toBe(false);
+    expect(markLogged(err)).toBe(err);
+    expect(isAlreadyLogged(err)).toBe(true);
+  });
+});

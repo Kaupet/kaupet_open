@@ -1,0 +1,17 @@
+node_modules
+dist
+.output
+.vinxi
+# Midlertidige arbeidskopier fra kodeagenter. Uten dette feiler
+# `bun run format:check` på filer som ikke er ens egne — samme problem som
+# eslint.config.js allerede ignorerer for lint.
+.claude/worktrees/
+pnpm-lock.yaml
+package-lock.json
+bun.lock
+routeTree.gen.ts
+src/routeTree.gen.ts
+src/integrations/supabase/types.ts
+android/capacitor-cordova-android-plugins/build/
+ios/App/App/capacitor.config.json
+ios/App/App/public/

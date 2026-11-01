@@ -1,0 +1,238 @@
+import { initials } from "@/lib/format";
+import { SAVED_SEARCHES_AVAILABLE } from "@/features/listing-search/saved-searches-availability";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { lazy, Suspense, useState } from "react";
+import {
+  User,
+  ListChecks,
+  Plus,
+  Heart,
+  Bell,
+  Settings,
+  LogOut,
+  Shield,
+  FlaskConical,
+  Moon,
+  Building2,
+} from "lucide-react";
+
+import { useIsAdmin, useIsDemo } from "@/hooks/use-user-roles";
+import { useAdminOpenEventsCount } from "@/hooks/use-admin-events";
+import { useTheme } from "@/hooks/use-theme";
+import { useIsTestEnv } from "@/lib/env";
+import { setTestMode } from "@/lib/test-mode.functions";
+import { formatErrorMessage } from "@/lib/errors";
+import { showSuccessToast, showErrorToast } from "@/lib/toast";
+
+import { supabase } from "@/integrations/supabase/client";
+import { clearMessageAttachmentUrlCache } from "@/lib/storage";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { CountBadge } from "@/components/ui/count-badge";
+import { Switch } from "@/components/ui/switch";
+import { useBusinessMembership } from "@/features/business-account/use-business-membership";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+// Lat-lastet: user-menu sitter i SiteHeader (rotsettet), men dialogen
+// trengs først når brukeren faktisk åpner den.
+const NewListingDialog = lazy(() =>
+  import("@/components/new-listing-dialog").then((m) => ({ default: m.NewListingDialog })),
+);
+
+export function UserMenu({ userId, email }: { userId: string; email: string | null }) {
+  const navigate = useNavigate();
+  const { data: isAdmin } = useIsAdmin();
+  const { data: isDemo } = useIsDemo();
+  const adminEvents = useAdminOpenEventsCount();
+  const canToggleTest = !!(isAdmin || isDemo);
+  const isTest = useIsTestEnv();
+  const [toggling, setToggling] = useState(false);
+  const [newListingOpen, setNewListingOpen] = useState(false);
+  // Holdes montert etter første åpning slik at Radix' lukkeanimasjon i
+  // ResponsiveOverlay ikke kuttes når `newListingOpen` går tilbake til false.
+  const [newListingLoaded, setNewListingLoaded] = useState(false);
+  const callSetTestMode = useServerFn(setTestMode);
+  const { resolvedTheme, setTheme } = useTheme();
+  const { data: businessMembership } = useBusinessMembership();
+
+  async function handleToggleTest(next: boolean) {
+    if (toggling) return;
+    setToggling(true);
+    try {
+      await callSetTestMode({ data: { enabled: next } });
+      showSuccessToast(next ? "Test-modus aktivert" : "Test-modus deaktivert");
+      window.location.reload();
+    } catch (e) {
+      showErrorToast(formatErrorMessage(e, "Kunne ikke endre test-modus"));
+      setToggling(false);
+    }
+  }
+
+  const { data: profile } = useQuery({
+    queryKey: ["profile-menu", userId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("display_name, avatar_url")
+        .eq("id", userId)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+  });
+
+  const displayName = profile?.display_name ?? email?.split("@")[0] ?? "Bruker";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          className="relative h-10 gap-2 rounded-full px-1.5 pr-3"
+          aria-label={
+            adminEvents > 0
+              ? `Brukermeny, ${adminEvents} nye administrasjonshendelser`
+              : "Brukermeny"
+          }
+        >
+          <Avatar className="size-8">
+            {profile?.avatar_url && <AvatarImage src={profile.avatar_url} alt={displayName} />}
+            <AvatarFallback className="bg-primary/10 text-xs font-medium text-primary">
+              {initials(profile?.display_name, email ?? "")}
+            </AvatarFallback>
+          </Avatar>
+          {adminEvents > 0 && <CountBadge count={adminEvents} className="absolute right-1 top-0" />}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuLabel className="flex flex-col gap-0.5">
+          <span className="text-sm font-medium">{displayName}</span>
+          {email && (
+            <span className="truncate text-xs font-normal text-muted-foreground">{email}</span>
+          )}
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/mine-annonser" className="cursor-pointer">
+            <ListChecks className="size-4" /> Mine annonser
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="cursor-pointer"
+          onSelect={(e) => {
+            e.preventDefault();
+            setNewListingLoaded(true);
+            setNewListingOpen(true);
+          }}
+        >
+          <Plus className="size-4" /> Ny annonse
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link to="/favoritter" className="cursor-pointer">
+            <Heart className="size-4" /> Favoritter
+          </Link>
+        </DropdownMenuItem>
+        {SAVED_SEARCHES_AVAILABLE && (
+          <DropdownMenuItem asChild>
+            <Link to="/mine-sok" className="cursor-pointer">
+              <Bell className="size-4" /> Mine søk
+            </Link>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link to="/profil" className="cursor-pointer">
+            <User className="size-4" /> Min profil
+          </Link>
+        </DropdownMenuItem>
+        {businessMembership && (
+          <DropdownMenuItem asChild>
+            <Link to="/bedrift" search={{ tab: "oversikt" }} className="cursor-pointer">
+              <Building2 className="size-4" /> Bedriftskonsoll
+            </Link>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem asChild>
+          <Link to="/profil" search={{ tab: "konto" }} className="cursor-pointer">
+            <Settings className="size-4" /> Kontoinnstillinger
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <div
+          className="flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm"
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <label htmlFor="dark-mode-toggle" className="flex items-center gap-2 cursor-pointer">
+            <Moon className="size-4" />
+            <span>Mørk modus</span>
+          </label>
+          <Switch
+            id="dark-mode-toggle"
+            checked={resolvedTheme === "dark"}
+            onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
+            aria-label="Aktiver mørk modus"
+          />
+        </div>
+        {(isAdmin || canToggleTest) && <DropdownMenuSeparator />}
+        {isAdmin && (
+          <DropdownMenuItem asChild>
+            <Link to="/admin" className="cursor-pointer">
+              <Shield className="size-4" /> Administrasjon
+              {adminEvents > 0 && (
+                <>
+                  <CountBadge count={adminEvents} className="ml-auto" />
+                  <span className="sr-only">, {adminEvents} nye hendelser</span>
+                </>
+              )}
+            </Link>
+          </DropdownMenuItem>
+        )}
+        {canToggleTest && (
+          <div
+            className="flex items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-sm"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+          >
+            <label htmlFor="test-mode-toggle" className="flex items-center gap-2 cursor-pointer">
+              <FlaskConical className="size-4" />
+              <span>Test-modus</span>
+            </label>
+            <Switch
+              id="test-mode-toggle"
+              checked={isTest}
+              disabled={toggling}
+              onCheckedChange={handleToggleTest}
+              aria-label="Aktiver test-modus for denne sesjonen"
+            />
+          </div>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="cursor-pointer text-destructive focus:text-destructive"
+          onSelect={async () => {
+            clearMessageAttachmentUrlCache();
+            await supabase.auth.signOut();
+            navigate({ to: "/" });
+          }}
+        >
+          <LogOut className="size-4" /> Logg ut
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+      {newListingLoaded && (
+        <Suspense fallback={null}>
+          <NewListingDialog open={newListingOpen} onOpenChange={setNewListingOpen} />
+        </Suspense>
+      )}
+    </DropdownMenu>
+  );
+}

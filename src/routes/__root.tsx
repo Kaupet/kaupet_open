@@ -1,0 +1,449 @@
+import { AuthLinkErrorBanner } from "@/components/auth-link-error-banner";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  createRootRouteWithContext,
+  type ErrorComponentProps,
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+  useRouter,
+  useRouterState,
+} from "@tanstack/react-router";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
+
+import appCss from "../styles.css?url";
+import { describeSafeError } from "@/lib/safe-error";
+import interVariableFontUrl from "@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url";
+import { SiteHeader } from "@/components/site-header";
+import { SetupGate } from "@/features/setup/setup-gate";
+import { loadSetupStatus } from "@/features/setup/setup-status";
+import { BRAND_LAYOUT } from "@/lib/brand-layout";
+import {
+  POWERED_BY,
+  SITE_DESCRIPTION,
+  SITE_NAME,
+  SITE_TITLE,
+  SITE_URL,
+  SITE_SOCIAL_IMAGE,
+} from "@/lib/site";
+import { SiteFooter } from "@/components/site-footer";
+import { ModerationBanner } from "@/components/moderation-banner";
+import { supabase } from "@/integrations/supabase/client";
+import { AuthProvider } from "@/lib/auth";
+import { createAuthQueryCacheHandler } from "@/lib/auth-query-cache";
+import { getSessionUser } from "@/lib/current-user.functions";
+import { flushAuthCookies } from "@/lib/native-cookies";
+import { clearMessageAttachmentUrlCache } from "@/lib/storage";
+import { ThemeProvider } from "@/hooks/use-theme";
+import { initOfflineWatcher } from "@/lib/native-offline";
+import {
+  autoRestoreNativePush,
+  initNativePushForeground,
+  initNativePushNavigation,
+} from "@/lib/native-push";
+import { setupNative } from "@/lib/native-setup";
+import { initUniversalLinkNavigation, hideNativeBootSplash } from "@/lib/native";
+import { useIsNative } from "@/hooks/use-is-native";
+import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
+import { SearchPanelProvider } from "@/features/listing-search/search-panel/search-panel-context";
+import { FeedbackTag } from "@/components/feedback-tag";
+import { TestEnvBanner } from "@/components/test-env-banner";
+import { TestEnvGate } from "@/components/test-env-gate";
+import { useIsTestEnv } from "@/lib/env";
+import {
+  isComposerRoute,
+  isConversationRoute,
+  isFocusedRoute,
+} from "@/features/listing-creation/chrome-routes";
+
+// Lat-lastet: native-only bunnavigasjon (drar med seg ResponsiveOverlay) skal
+// ikke tynge rotsettet for webbrukere som aldri rendrer den.
+const AppBottomNav = lazy(() =>
+  import("@/components/app-bottom-nav").then((m) => ({ default: m.AppBottomNav })),
+);
+// Lat-lastet: ingen toast vises i første maling. Sonner replayer aktive
+// toasts til `Toaster` når den abonnerer, selv om de ble trigget før den
+// rakk å laste (se `Observer.subscribe` i sonner), så ingenting går tapt.
+const Toaster = lazy(() => import("@/components/ui/sonner").then((m) => ({ default: m.Toaster })));
+
+// Prøver å hente ut origin fra en env-variabel til et preconnect-hint. Skal
+// aldri kaste under SSR — hopper heller over hintet hvis variabelen mangler
+// eller ikke er en gyldig URL.
+function safeOrigin(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function NotFoundComponent() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="max-w-md text-center">
+        <h1 className="font-display text-7xl text-primary">404</h1>
+        <h2 className="mt-4 text-xl font-semibold">Siden finnes ikke</h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Vi fant ikke det du leter etter. Den kan ha blitt fjernet eller flyttet.
+        </p>
+        <div className="mt-6">
+          <Link
+            to="/"
+            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:opacity-90"
+          >
+            Til forsiden
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ErrorComponent({ error, reset }: ErrorComponentProps) {
+  console.error("[root route] error", describeSafeError(error));
+  const router = useRouter();
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="max-w-md text-center">
+        <h1 className="text-xl font-semibold">Noe gikk galt</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Vi klarte ikke å laste siden. Prøv på nytt eller gå tilbake til forsiden.
+        </p>
+        <div className="mt-6 flex flex-wrap justify-center gap-2">
+          <button
+            onClick={() => {
+              router.invalidate();
+              reset();
+            }}
+            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+          >
+            Prøv på nytt
+          </button>
+          <a
+            href="/"
+            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent/10"
+          >
+            Til forsiden
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  // Leser sesjonen fra kapselen på serveren, slik at headeren kan rendres med
+  // riktig auth-tilstand ved første maling i stedet for et skjelett. På
+  // klienten lar vi AuthProvider finne sesjonen selv (den er lokal og
+  // umiddelbar) — da slipper vi et RPC-hopp per navigasjon.
+  loader: async () => ({
+    ssrUser: typeof window === "undefined" ? await getSessionUser() : undefined,
+    setup: await loadSetupStatus(),
+  }),
+  head: ({ ssr }) => ({
+    meta: [
+      { charSet: "utf-8" },
+      {
+        name: "viewport",
+        content: "width=device-width, initial-scale=1, viewport-fit=cover",
+      },
+      { title: SITE_TITLE },
+      { name: "author", content: SITE_NAME },
+      // Synlig i view-source på hver SSR-side, og AGPL §13-kildehenvisningen.
+      {
+        name: "generator",
+        content: `Powered by ${POWERED_BY}`,
+      },
+      { property: "og:site_name", content: SITE_NAME },
+      { property: "og:locale", content: "nb_NO" },
+      { property: "og:type", content: "website" },
+      { property: "og:title", content: SITE_TITLE },
+      { property: "og:url", content: `${SITE_URL}/` },
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: SITE_TITLE },
+      {
+        name: "description",
+        content: SITE_DESCRIPTION,
+      },
+      {
+        property: "og:description",
+        content: SITE_DESCRIPTION,
+      },
+      {
+        name: "twitter:description",
+        content: SITE_DESCRIPTION,
+      },
+      {
+        property: "og:image",
+        content: `${SITE_URL}${SITE_SOCIAL_IMAGE}`,
+      },
+      {
+        name: "twitter:image",
+        content: `${SITE_URL}${SITE_SOCIAL_IMAGE}`,
+      },
+    ],
+    links: [
+      // Preconnect sparer en DNS+TLS-rundtur før det første bilde-/datakallet,
+      // og preload av brødtekstfonten (Inter) fjerner FOUT-forsinkelsen ved
+      // første maling.
+      ...(safeOrigin(import.meta.env.VITE_SUPABASE_URL)
+        ? [
+            {
+              rel: "preconnect",
+              href: safeOrigin(import.meta.env.VITE_SUPABASE_URL),
+              crossOrigin: "anonymous" as const,
+            },
+          ]
+        : []),
+      ...(safeOrigin(import.meta.env.VITE_R2_PUBLIC_BASE_URL)
+        ? [{ rel: "preconnect", href: safeOrigin(import.meta.env.VITE_R2_PUBLIC_BASE_URL) }]
+        : []),
+      {
+        rel: "preload",
+        href: interVariableFontUrl,
+        as: "font",
+        type: "font/woff2",
+        crossOrigin: "anonymous",
+      },
+      { rel: "stylesheet", href: appCss },
+      { rel: "icon", href: "/favicon.ico", sizes: "any" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
+    ],
+
+    scripts: [
+      {
+        type: "application/ld+json",
+        ...(ssr?.nonce ? { nonce: ssr.nonce } : {}),
+        children: JSON.stringify({
+          "@context": "https://schema.org",
+          "@graph": [
+            {
+              "@type": "Organization",
+              "@id": `${SITE_URL}/#organization`,
+              name: SITE_NAME,
+              url: `${SITE_URL}/`,
+              description:
+                "Norsk markedsplass for brukte ting mellom privatpersoner, med kjernekomponentene som åpen kildekode i kaupet_open.",
+            },
+            {
+              "@type": "WebSite",
+              "@id": `${SITE_URL}/#website`,
+              url: `${SITE_URL}/`,
+              name: SITE_NAME,
+              inLanguage: "nb-NO",
+              publisher: { "@id": `${SITE_URL}/#organization` },
+              potentialAction: {
+                "@type": "SearchAction",
+                target: `${SITE_URL}/annonser?q={search_term_string}`,
+                "query-input": "required name=search_term_string",
+              },
+            },
+          ],
+        }),
+      },
+    ],
+  }),
+  shellComponent: RootShell,
+  component: GatedRoot,
+  notFoundComponent: NotFoundComponent,
+  errorComponent: ErrorComponent,
+});
+
+function RootShell({ children }: { children: ReactNode }) {
+  return (
+    <html lang="nb" data-layout={BRAND_LAYOUT} suppressHydrationWarning>
+      <head>
+        <HeadContent />
+        {/* Runs synchronously during parsing, before anything paints (native-boot
+            class detection + dark-mode-flash prevention). Moved to a static,
+            same-origin file so it runs under the CSP's script-src 'self' without
+            needing 'unsafe-inline' or a maintained hash — see public/boot.js. */}
+        <script src="/boot.js" />
+      </head>
+      <body>
+        {/* Same background/logo as capacitor.config.ts SplashScreen + the
+            iOS/Android launch images — this picks up right where the native
+            splash leaves off and stays until the native layout has actually
+            painted (see useIsNative / hideNativeBootSplash). */}
+        <div id="native-boot-splash">
+          <div className="native-boot-icon" aria-hidden="true" />
+        </div>
+        {children}
+        <Scripts />
+      </body>
+    </html>
+  );
+}
+
+// Mens oppsettet mangler, monteres ikke appen i det hele tatt: RootComponent
+// abonnerer på Supabase-auth, som kaster uten miljøvariabler.
+function GatedRoot() {
+  const { setup } = Route.useLoaderData();
+  return (
+    <SetupGate status={setup}>
+      <RootComponent />
+    </SetupGate>
+  );
+}
+
+function RootComponent() {
+  const { queryClient } = Route.useRouteContext();
+  const { ssrUser } = Route.useLoaderData();
+  const router = useRouter();
+
+  useEffect(() => {
+    document.documentElement.dataset.kaupetHydrated = "true";
+    return () => {
+      delete document.documentElement.dataset.kaupetHydrated;
+    };
+  }, []);
+
+  useEffect(() => {
+    // Cachen tømmes ved identitetsbytte og invalideres ellers bare ved ekte
+    // inn-/utlogging — se createAuthQueryCacheHandler.
+    const syncQueryCache = createAuthQueryCacheHandler(queryClient);
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      // Sesjonskapselen er nettopp skrevet, fornyet eller slettet. På Android
+      // ligger den bare i minnet til WebViewen flusher, og onPause kjører
+      // ikke hvis prosessen dør i forgrunnen — da mistet vi en fersk
+      // innlogging, og en utlogging festet seg ikke. Se native-cookies.ts.
+      // INITIAL_SESSION endrer ingenting og trenger ingen flush.
+      if (event !== "INITIAL_SESSION") void flushAuthCookies();
+
+      if (event === "SIGNED_OUT") clearMessageAttachmentUrlCache();
+      if (syncQueryCache(event, session)) router.invalidate();
+      if (event === "SIGNED_IN") {
+        // Onboarding can grant OS permission before the user signs in. Retry
+        // the account-bound subscription now without showing another prompt.
+        void autoRestoreNativePush();
+        // Cancel pending account deletion if the user signs back in
+        void (async () => {
+          try {
+            const { data } = await supabase.rpc("cancel_account_deletion");
+            if (data === true) {
+              const { showSuccessToast } = await import("@/lib/toast");
+              showSuccessToast("Velkommen tilbake! Slettingen av kontoen din er avbrutt.");
+            }
+          } catch {
+            // ignore
+          }
+        })();
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [router, queryClient]);
+
+  useEffect(() => {
+    const cleanup = initOfflineWatcher();
+    void setupNative();
+    void autoRestoreNativePush();
+    void initNativePushNavigation((url) => router.navigate({ href: url }));
+    void initNativePushForeground((url) => router.navigate({ href: url }));
+    void initUniversalLinkNavigation((url) => router.navigate({ href: url }));
+    return cleanup;
+  }, [router]);
+
+  const native = useIsNative();
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <AuthProvider initialUser={ssrUser}>
+          <RootBody native={native} />
+          <Suspense fallback={null}>
+            <Toaster />
+          </Suspense>
+        </AuthProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
+  );
+}
+
+function RootBody({ native }: { native: boolean }) {
+  const isTest = useIsTestEnv();
+  const keyboardVisible = useKeyboardVisible();
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const composerRoute = isComposerRoute(pathname);
+  const bottomNavHidden = composerRoute || isFocusedRoute(pathname);
+
+  useEffect(() => {
+    // Runs after the browser has painted this render — by the time we get
+    // here the native-layout DOM (bottom nav etc.) is already on screen, so
+    // removing the overlay now never re-exposes the web-layout flash
+    // (useIsNative leser plattformen allerede i første render). Kalles
+    // ubetinget: finnes overlayet uten at vi er native — boot.js' dev-flagg
+    // mot et miljø der isNative() er strippet — skal det også vekk her, ikke
+    // bli stående for alltid.
+    hideNativeBootSplash();
+  }, []);
+
+  useEffect(() => {
+    if (!isTest) return;
+    const original = document.title;
+    if (!original.startsWith("[TEST]")) {
+      document.title = `[TEST] ${original}`;
+    }
+    let meta = document.querySelector('meta[name="robots"]') as HTMLMetaElement | null;
+    const created = !meta;
+    if (!meta) {
+      meta = document.createElement("meta");
+      meta.name = "robots";
+      document.head.appendChild(meta);
+    }
+    const prevContent = meta.content;
+    meta.content = "noindex, nofollow";
+    return () => {
+      document.title = original;
+      if (created) meta?.remove();
+      else if (meta) meta.content = prevContent;
+    };
+  }, [isTest]);
+
+  const body = (
+    <div
+      className={`flex min-h-screen flex-col bg-background${composerRoute ? " composer-route" : ""}`}
+    >
+      {!native && (
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground"
+        >
+          Hopp til innhold
+        </a>
+      )}
+      {isTest && <TestEnvBanner />}
+      {!native && !composerRoute && <SiteHeader />}
+      <ModerationBanner />
+      <main
+        id="main-content"
+        className={`flex-1${native && !keyboardVisible && !bottomNavHidden ? " pb-bottom-nav" : ""}`}
+      >
+        <AuthLinkErrorBanner />
+        <Outlet />
+      </main>
+
+      {!native && !composerRoute && !isConversationRoute(pathname) && <SiteFooter />}
+      {native && !bottomNavHidden && (
+        <Suspense fallback={null}>
+          <AppBottomNav hidden={keyboardVisible} />
+        </Suspense>
+      )}
+      <FeedbackTag />
+    </div>
+  );
+
+  // Panelet lever over rutene (fase 12) — bunnavigasjonens «Søk»-fane åpner
+  // det direkte i stedet for å navigere til en side som mounter sin egen
+  // instans. Montert uansett plattform (ikke bare `native`): /annonser og
+  // søsknene deler komponent mellom web og native og kaller
+  // `useRegisterSearchPanelResults` ubetinget, så providerens context må
+  // finnes uansett — web bruker den bare aldri (ingen bunnavigasjon der).
+  const content = <SearchPanelProvider>{body}</SearchPanelProvider>;
+
+  return isTest ? <TestEnvGate>{content}</TestEnvGate> : content;
+}

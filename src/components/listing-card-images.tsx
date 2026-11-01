@@ -1,0 +1,126 @@
+import { Link } from "@tanstack/react-router";
+import { MapPin } from "lucide-react";
+import { memo, useState } from "react";
+import { ImageGallery } from "@/components/listing-detail/image-gallery";
+import type { ListingCardData } from "@/lib/listing-card-data";
+import { SOLD_PRICE_LABEL, SoldBanner } from "@/components/listing-card";
+import { FavoriteButton } from "@/components/favorite-button";
+import { formatPrice, displayPriceNok } from "@/lib/format";
+import { useListingCardGallery } from "@/hooks/use-listing-card-gallery";
+
+type Props = {
+  listing: ListingCardData;
+  linkState?: Record<string, unknown>;
+  coverImageUrl?: string | null;
+  knownFavorite?: boolean;
+  favoriteStateReady?: boolean;
+};
+
+/** Full-width "bilder" search-result variant — the listing's image gallery
+ * is the entire card, with title/price/location laid over the top as a
+ * gradient-backed overlay so the text stays readable regardless of how
+ * light or dark the photo is. */
+// Memoisert fordi hover-state i result-list ellers rendrer hele resultatlista
+// på nytt for hver musebevegelse mellom kort.
+export const ListingCardImages = memo(function ListingCardImages({
+  listing,
+  linkState,
+  coverImageUrl,
+  knownFavorite,
+  favoriteStateReady,
+}: Props) {
+  const [activeImage, setActiveImage] = useState(0);
+  const priceLabel = listing.sold_at
+    ? SOLD_PRICE_LABEL
+    : formatPrice({ price_nok: displayPriceNok(listing), is_free: listing.is_free });
+  const { rootRef, images, imgUrls, isLoading, effectiveImageUrl, handleImageError } =
+    useListingCardGallery(listing.id, listing.cover_path, coverImageUrl);
+
+  const overlay = (
+    <div
+      className="pointer-events-none absolute inset-x-0 top-0 rounded-t-xl p-4 pb-10 text-white"
+      style={{
+        // Flere gradient-steg enn Tailwinds from/via/to (2 segmenter) gir en
+        // finere alfa-rampe — en grov 2-stegs gradient over et stort, flatt
+        // område viste synlig banding/stripete overgang på jevne bakgrunner.
+        backgroundImage:
+          "linear-gradient(to bottom, rgba(0,0,0,0.72) 0%, rgba(0,0,0,0.58) 15%, rgba(0,0,0,0.42) 30%, rgba(0,0,0,0.27) 45%, rgba(0,0,0,0.15) 60%, rgba(0,0,0,0.06) 75%, rgba(0,0,0,0) 100%)",
+      }}
+    >
+      <h3 className="line-clamp-2 text-base font-medium leading-snug drop-shadow-sm">
+        {listing.title}
+      </h3>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <p
+          className={`font-display text-lg font-semibold drop-shadow-sm ${listing.sold_at ? "uppercase" : ""}`}
+        >
+          {priceLabel}
+        </p>
+        {listing.city && (
+          <p className="flex items-center gap-1 text-sm drop-shadow-sm">
+            <MapPin className="size-3.5" /> {listing.city}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <article
+      ref={rootRef}
+      className="relative overflow-hidden rounded-xl border border-border bg-card"
+    >
+      {listing.sold_at && <SoldBanner compact={false} />}
+      <Link
+        to="/$kaupetCode"
+        params={{ kaupetCode: listing.kaupet_code }}
+        state={linkState}
+        onClick={(e) => {
+          // Karusellpilene ligger visuelt oppå bildet og dermed inni denne
+          // lenken — bare naviger når klikket ikke traff en pil.
+          if ((e.target as HTMLElement).closest("button")) {
+            e.preventDefault();
+            return;
+          }
+        }}
+        className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        {images.length > 0 ? (
+          <ImageGallery
+            images={images}
+            imgUrls={imgUrls}
+            activeImage={activeImage}
+            onSelect={setActiveImage}
+            title={listing.title}
+            showThumbnails={false}
+            overlaySlot={overlay}
+            fit="cover"
+          />
+        ) : (
+          <div className="relative aspect-[4/3] overflow-hidden rounded-xl border border-border bg-muted">
+            {effectiveImageUrl ? (
+              <img
+                src={effectiveImageUrl}
+                alt={listing.title}
+                className="size-full object-cover"
+                onError={handleImageError}
+              />
+            ) : (
+              <div className="flex size-full items-center justify-center text-sm text-muted-foreground">
+                {isLoading ? "Laster bilder…" : "Ingen bilder"}
+              </div>
+            )}
+            {overlay}
+          </div>
+        )}
+      </Link>
+      <FavoriteButton
+        listingId={listing.id}
+        size="sm"
+        className="absolute right-3 top-3 z-10"
+        knownFavorite={knownFavorite}
+        favoriteStateReady={favoriteStateReady}
+      />
+    </article>
+  );
+});

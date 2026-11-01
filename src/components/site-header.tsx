@@ -1,0 +1,142 @@
+import { Link, useRouterState } from "@tanstack/react-router";
+import { BrandWordmark } from "@/components/brand-mark";
+import { MessageCircle, Search } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useAuth } from "@/hooks/use-auth";
+import { Button } from "@/components/ui/button";
+import { CountBadge } from "@/components/ui/count-badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { UserMenu } from "@/components/user-menu";
+import { NotificationsBell } from "@/components/notifications-bell";
+import { useUnreadConversationsCount } from "@/hooks/use-unread";
+import { useSearchPanel } from "@/features/listing-search/search-panel/search-panel-context";
+import { BusinessPlanLogo } from "@/features/business-account/business-plan-logo";
+import { DeveloperLogo, DeveloperNav } from "@/components/developer/developer-nav";
+import { isDeveloperPath } from "@/components/developer/developer-path";
+import { useBusinessMembership } from "@/features/business-account/use-business-membership";
+import { ANNONSER_SEARCH_INPUT_ID } from "@/features/listing-search/search-input-id";
+import { focusWhenReady } from "@/lib/focus-when-ready";
+
+const HEADER_SEARCH_SLOT_ID = "header-search-slot";
+
+export function HeaderSearchPortal({ children }: { children: ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+
+  // This post-mount render is the hydration boundary for the client-only portal target.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setMounted(true), []);
+
+  const slot = mounted ? document.getElementById(HEADER_SEARCH_SLOT_ID) : null;
+  return slot ? createPortal(children, slot) : null;
+}
+
+export function SiteHeader() {
+  const { user, loading: authLoading } = useAuth();
+  const { data: businessMembership } = useBusinessMembership();
+  const { openPanel } = useSearchPanel();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const businessPlan = businessMembership?.organization.selected_plan ?? null;
+  // Utviklerlogoen vinner over Proff-logoen: den sier hvor du er.
+  const developer = isDeveloperPath(pathname);
+
+  return (
+    <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur pt-safe">
+      <nav
+        aria-label="Hovednavigasjon"
+        className="mx-auto flex h-16 w-full max-w-[1600px] items-center gap-1 px-2 md:gap-4 md:px-4"
+      >
+        <Link to="/" className="flex shrink-0 items-baseline gap-1">
+          {developer ? (
+            <DeveloperLogo />
+          ) : businessPlan ? (
+            <BusinessPlanLogo plan={businessPlan} compact />
+          ) : (
+            <BrandWordmark size="2xl" />
+          )}
+        </Link>
+
+        {developer ? (
+          <DeveloperNav className="hidden flex-1 md:flex" />
+        ) : (
+          <div id={HEADER_SEARCH_SLOT_ID} className="hidden flex-1 md:block" />
+        )}
+
+        <div className="ml-auto flex items-center gap-0 md:gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            aria-label="Åpne søk"
+            onClick={() => {
+              const find = () => {
+                const el = document.getElementById(ANNONSER_SEARCH_INPUT_ID);
+                return el instanceof HTMLInputElement ? el : null;
+              };
+              // Synlig sidesøk (annonser og kategorisider) fokuseres direkte. På
+              // /annonser kan det være under montering (treg enhet): vent på det
+              // i stedet for å åpne søkepanelet.
+              const input = find();
+              if (pathname === "/annonser" || (input && input.getClientRects().length > 0)) {
+                focusWhenReady(find, { scroll: true });
+                return;
+              }
+              openPanel("query");
+            }}
+          >
+            <Search className="size-5" />
+          </Button>
+          {/* Sesjonen ligger nå i informasjonskapsler, så serveren kjenner
+              auth-tilstanden og seeder AuthProvider (se __root.tsx). Da er
+              authLoading allerede false ved første maling, og riktig variant
+              — brukermeny eller «Logg inn»/«Bli medlem» — ligger i
+              SSR-svaret.
+
+              Skjelettet beholdes for tilfellene der serveren ikke har avgjort
+              tilstanden (klientnavigasjon, og ruter uten SSR). Uten den
+              mellomtilstanden viste vi «Logg inn»/«Bli medlem» til en
+              innlogget bruker i ~100 ms etter første maling — appen påsto
+              altså at du var logget ut. Vi venter heller med å svare til vi
+              vet svaret. */}
+          {authLoading ? (
+            <Skeleton className="size-9 rounded-full" aria-hidden="true" />
+          ) : user ? (
+            <>
+              <NotificationsBell />
+              <MessagesIconLink />
+              <UserMenu userId={user.id} email={user.email ?? null} />
+            </>
+          ) : (
+            <>
+              <Button asChild size="sm" variant="ghost" className="max-[359px]:hidden">
+                <Link to="/auth">Logg inn</Link>
+              </Button>
+              <Button asChild size="sm">
+                <Link to="/auth" search={{ mode: "signup" }}>
+                  Bli medlem
+                </Link>
+              </Button>
+            </>
+          )}
+        </div>
+      </nav>
+    </header>
+  );
+}
+
+function MessagesIconLink() {
+  const unread = useUnreadConversationsCount();
+  return (
+    <Button asChild variant="ghost" size="icon">
+      <Link
+        to="/meldinger"
+        aria-label={unread > 0 ? `Meldinger, ${unread} uleste` : "Meldinger"}
+        className="relative"
+      >
+        <MessageCircle className="size-5" />
+        {unread > 0 && <CountBadge count={unread} className="absolute right-0 top-0" />}
+      </Link>
+    </Button>
+  );
+}
