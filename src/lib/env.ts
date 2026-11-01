@@ -1,0 +1,38 @@
+/**
+ * Generic environment detection based on hostname OR per-session cookie.
+ * Test environment = SITE_TEST_HOST, test.localhost, or an admin/demo
+ * session that has opted into test-modus via the kaupet_test_mode cookie.
+ * Used to switch payment APIs to test mode, show test banner, gate access, etc.
+ */
+
+import { SITE_TEST_HOST } from "@/lib/site";
+
+export const TEST_HOSTS = [SITE_TEST_HOST, "test.localhost"].filter((host) => host !== "");
+export const TEST_MODE_COOKIE = "kaupet_test_mode";
+
+export function isTestHost(host?: string | null): boolean {
+  if (!host) return false;
+  const h = host.split(":")[0].toLowerCase();
+  return TEST_HOSTS.includes(h);
+}
+
+function hasTestModeCookie(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.cookie.split(";").some((c) => c.trim().startsWith(`${TEST_MODE_COOKIE}=1`));
+}
+
+/** Client-side check. Returns false during SSR. */
+export function isTestEnvClient(): boolean {
+  if (typeof window === "undefined") return false;
+  return isTestHost(window.location.hostname) || hasTestModeCookie();
+}
+
+import { useSyncExternalStore } from "react";
+
+const subscribe = () => () => {};
+const getServerSnapshot = () => false;
+
+/** React hook — returns false on server/hydration (SSR-safe), true on the client if on test host or cookie is set. */
+export function useIsTestEnv(): boolean {
+  return useSyncExternalStore(subscribe, isTestEnvClient, getServerSnapshot);
+}

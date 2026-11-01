@@ -1,0 +1,6 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Sett eget navn. Ingen konto, domener eller ressursbindinger følger med.
+  // Nitro genererer entrypoint, assets og compatibility_date ved bygg.
+  "name": "marketplace",
+}

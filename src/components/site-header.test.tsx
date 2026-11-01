@@ -1,0 +1,233 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { hydrateRoot, type Root } from "react-dom/client";
+import { renderToString } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
+import { EDITION } from "@/lib/edition";
+import { SiteHeader, HeaderSearchPortal } from "./site-header";
+
+type HeaderMembership = {
+  status: "active";
+  organization: { selected_plan: "proff_basis" | "proff" | null };
+};
+
+const defaultHeaderUser = { id: "user-id", email: "user@example.test" };
+
+const headerMocks = vi.hoisted(() => ({
+  user: { id: "user-id", email: "user@example.test" } as { id: string; email: string } | null,
+  membership: null as HeaderMembership | null,
+  loading: false,
+  openPanel: vi.fn(),
+  pathname: "/",
+}));
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({
+    to,
+    children,
+    activeProps: _activeProps,
+    activeOptions: _activeOptions,
+    ...props
+  }: {
+    to: string;
+    children?: ReactNode;
+    [key: string]: unknown;
+  }) => (
+    <a href={to} {...props}>
+      {children}
+    </a>
+  ),
+  useRouterState: () => headerMocks.pathname,
+}));
+vi.mock("@/hooks/use-auth", () => ({
+  useAuth: () => ({ user: headerMocks.user, session: null, loading: headerMocks.loading }),
+}));
+vi.mock("@/features/business-account/use-business-membership", () => ({
+  useBusinessMembership: () => ({ data: headerMocks.membership }),
+}));
+vi.mock("@/features/listing-search/search-panel/search-panel-context", () => ({
+  useSearchPanel: () => ({ openPanel: headerMocks.openPanel }),
+}));
+vi.mock("@/hooks/use-unread", () => ({ useUnreadConversationsCount: () => 0 }));
+vi.mock("@/components/user-menu", () => ({ UserMenu: () => <span /> }));
+vi.mock("@/components/notifications-bell", () => ({ NotificationsBell: () => <span /> }));
+vi.mock("@/lib/product-analytics", () => ({ trackProductEvent: vi.fn() }));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
+
+afterEach(() => {
+  cleanup();
+  document.body.replaceChildren();
+  headerMocks.membership = null;
+  headerMocks.pathname = "/";
+  headerMocks.loading = false;
+  headerMocks.user = defaultHeaderUser;
+});
+
+describe("HeaderSearchPortal", () => {
+  it("hydrerer uten avvik og beholder søkefeltet gjennom sticky-overgangen", async () => {
+    const serverHtml = renderToString(
+      <HeaderSearchPortal>
+        <input aria-label="Søk i annonser" />
+      </HeaderSearchPortal>,
+    );
+    const app = document.createElement("div");
+    const slot = document.createElement("div");
+    slot.id = "header-search-slot";
+    app.innerHTML = serverHtml;
+    document.body.append(app, slot);
+    const hydrationErrors: unknown[] = [];
+    let root!: Root;
+
+    await act(async () => {
+      root = hydrateRoot(
+        app,
+        <HeaderSearchPortal>
+          <input aria-label="Søk i annonser" />
+        </HeaderSearchPortal>,
+        { onRecoverableError: (error) => hydrationErrors.push(error) },
+      );
+    });
+
+    const input = await waitFor(() => {
+      const element = slot.querySelector<HTMLInputElement>('input[aria-label="Søk i annonser"]');
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    input.value = "sykkel";
+    input.focus();
+
+    await act(async () => {
+      root.render(
+        <HeaderSearchPortal>
+          <input aria-label="Søk i annonser" aria-hidden />
+        </HeaderSearchPortal>,
+      );
+    });
+
+    expect(hydrationErrors).toEqual([]);
+    expect(slot.querySelector("input")).toBe(input);
+    expect(input.value).toBe("sykkel");
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("SiteHeader", () => {
+  it("bruker kompakt spacing på smale skjermer uten å fjerne navigasjonshandlinger", () => {
+    render(<SiteHeader />);
+
+    const nav = screen.getByRole("navigation", { name: "Hovednavigasjon" });
+    expect(nav.className).toContain("gap-1");
+    expect(nav.className).toContain("px-2");
+    expect(nav.className).toContain("md:gap-4");
+    expect(nav.className).toContain("md:px-4");
+    expect(screen.getByRole("button", { name: "Åpne søk" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Meldinger" })).toBeTruthy();
+  });
+
+  it("«Åpne søk» fokuserer et synlig sidesøk også utenfor /annonser (kategorisider)", () => {
+    const input = document.createElement("input");
+    input.id = "annonser-search-input";
+    input.getClientRects = () => [{}] as unknown as DOMRectList;
+    input.scrollIntoView = vi.fn();
+    document.body.append(input);
+    headerMocks.openPanel.mockClear();
+
+    render(<SiteHeader />);
+    screen.getByRole("button", { name: "Åpne søk" }).click();
+
+    expect(document.activeElement).toBe(input);
+    expect(headerMocks.openPanel).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it("«Åpne søk» åpner søkepanelet når siden ikke har sidesøk", () => {
+    headerMocks.openPanel.mockClear();
+    render(<SiteHeader />);
+    screen.getByRole("button", { name: "Åpne søk" }).click();
+    expect(headerMocks.openPanel).toHaveBeenCalledWith("query");
+  });
+
+  it.skipIf(EDITION === "open")(
+    "viser Proff basis-logoen for en aktiv bedrift med Proff basis",
+    () => {
+      headerMocks.membership = {
+        status: "active",
+        organization: { selected_plan: "proff_basis" },
+      };
+
+      render(<SiteHeader />);
+
+      expect(screen.getByText("kaupet")).toBeTruthy();
+      expect(screen.getByText("Proff")).toBeTruthy();
+      expect(screen.getByText("Basis")).toBeTruthy();
+    },
+  );
+
+  it.skipIf(EDITION === "open")("viser Proff-logoen for en aktiv bedrift med Proff", () => {
+    headerMocks.membership = {
+      status: "active",
+      organization: { selected_plan: "proff" },
+    };
+
+    render(<SiteHeader />);
+
+    expect(screen.getByText("Proff")).toBeTruthy();
+    expect(screen.queryByText("Basis")).toBeNull();
+  });
+
+  // Utviklerportalen er ikke med i kaupet_open.
+  it.skipIf(EDITION === "open")(
+    "viser utviklerlogoen og utviklernavigasjonen på /developer, også for Proff",
+    () => {
+      headerMocks.pathname = "/developer/proff-api";
+      headerMocks.membership = { status: "active", organization: { selected_plan: "proff" } };
+
+      render(<SiteHeader />);
+
+      expect(screen.getByText("/developer")).toBeTruthy();
+      expect(screen.queryByText("Proff")).toBeNull();
+      expect(screen.getByRole("link", { name: /developer/ }).getAttribute("href")).toBe("/");
+      expect(screen.getByRole("navigation", { name: "Utviklernavigasjon" })).toBeTruthy();
+    },
+  );
+
+  it("viser vanlig logo når bedriftstilknytningen ikke er aktiv", () => {
+    headerMocks.membership = null;
+
+    render(<SiteHeader />);
+
+    expect(screen.getByText("kaupet")).toBeTruthy();
+    expect(screen.getByText(EDITION === "open" ? "open" : "no")).toBeTruthy();
+    expect(screen.queryByText("Proff")).toBeNull();
+  });
+});
+
+describe("SiteHeader under auth-oppstart", () => {
+  // Sesjonen ligger i localStorage og er ukjent til hydreringen har lest den.
+  // Headeren skal ikke gjette i mellomtiden — å vise «Logg inn» til en
+  // innlogget bruker er verre enn å vise ingenting.
+  it("viser verken innlogget eller utlogget tilstand mens sesjonen leses", () => {
+    headerMocks.loading = true;
+
+    render(<SiteHeader />);
+
+    expect(screen.queryByText("Logg inn")).toBeNull();
+    expect(screen.queryByText("Bli medlem")).toBeNull();
+  });
+
+  it("viser innloggingsknappene så snart vi vet at ingen er innlogget", () => {
+    headerMocks.loading = false;
+    headerMocks.user = null;
+
+    render(<SiteHeader />);
+
+    expect(screen.getByText("Logg inn")).toBeTruthy();
+    expect(screen.getByText("Bli medlem")).toBeTruthy();
+  });
+});

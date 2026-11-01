@@ -1,0 +1,48 @@
+kaupet_open — markedsplass på åpen kildekode
+Copyright (C) 2026 Happy Pixel AS
+
+Dette er fri programvare: du kan distribuere det og/eller
+endre det under vilkårene i GNU Affero General Public License,
+publisert av Free Software Foundation, enten versjon 3 av lisensen,
+eller (etter eget valg) en senere versjon.
+
+Denne programvaren distribueres i håp om at det skal være nyttig, men
+UTEN NOEN GARANTI; uten engang den underforståtte garantien om
+SALGBARHET eller EGNETHET FOR ET BESTEMT FORMÅL. Se GNU Affero
+General Public License for flere detaljer.
+
+Du skal ha mottatt en kopi av GNU Affero General Public License sammen
+med programvaren (se filen LICENSE). Hvis ikke, se
+<https://www.gnu.org/licenses/>.
+
+═══════════════════════════════════════════════════════════════════════
+
+Viktig om AGPL-3.0 og nettverksbruk (§13):
+
+Hvis du modifiserer koden og kjører det som en nettverkstjeneste,
+MÅ du tilby kildekoden til din modifiserte versjon til alle brukerne
+av tjenesten, under samme AGPL-3.0-lisens.
+
+═══════════════════════════════════════════════════════════════════════
+
+Tilleggsvilkår etter AGPL-3.0 § 7:
+
+(b) Kreditering. Verk som bygger på denne programvaren, skal
+    a) beholde denne NOTICE-filen uendret, bortsett fra at du kan legge
+       til egne opphavsrettsmerknader, og
+    b) vise en synlig henvisning til prosjektet i brukergrensesnittet,
+       som en del av de passende juridiske merknadene (Appropriate
+       Legal Notices, § 5(d)). Bunnteksten «Bygd på kaupet_open» med
+       lenke til https://github.com/Kaupet/kaupet_open oppfyller kravet.
+
+(e) Varemerker. Lisensen gir ingen rett etter varemerkeretten til
+    ordet «kaupet» i noen skrivemåte, til logoer eller grafisk profil
+    Happy Pixel AS bruker, eller til kjennetegn som kan forveksles med
+    disse. Du kan omtale opphavet («bygd på kaupet_open»), men ikke
+    bruke navnet om egen tjeneste. Se TRADEMARKS.md.
+
+═══════════════════════════════════════════════════════════════════════
+
+Tredjeparts komponenter brukt av dette prosjektet beholder sine
+opprinnelige lisenser. Se package.json og node_modules/*/LICENSE
+for detaljer.

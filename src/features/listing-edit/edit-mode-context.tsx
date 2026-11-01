@@ -1,0 +1,27 @@
+import { createContext, useContext } from "react";
+
+import type { CategoryBehavior } from "@/lib/category-behavior";
+import type { ListingFieldPatch } from "./save-listing-field";
+
+export type FieldStatus = "idle" | "saving" | "saved" | "error";
+
+export type ListingEditContextValue = {
+  editMode: boolean;
+  listingId: string;
+  behavior: CategoryBehavior;
+  saveField: (patch: ListingFieldPatch) => Promise<void>;
+  fieldStatus: Record<string, FieldStatus>;
+  openVerticalEditDialog: () => void;
+  openCategoryModal: () => void;
+  /** Overstyrer kartvelgeren når sted redigeres — utkastet i annonseflyten
+   * hopper i stedet til stedssteget, der postnummer også kan endres. */
+  openLocationEditor?: () => void;
+  /** Henter presise koordinater først når en autorisert eier åpner kartvelgeren. */
+  getPreciseLocation?: () => Promise<{ lat: number | null; lng: number | null } | null>;
+};
+
+export const ListingEditContext = createContext<ListingEditContextValue | null>(null);
+
+export function useListingEdit(): ListingEditContextValue | null {
+  return useContext(ListingEditContext);
+}

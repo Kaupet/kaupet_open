@@ -1,0 +1,119 @@
+import { UNAUTHORIZED_MESSAGE } from "@/lib/business/schemas";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+
+import { getBusinessOrganization } from "@/lib/business/organization.functions";
+import { useAuth } from "@/hooks/use-auth";
+import type { BusinessPlan } from "@/features/business-account/plans";
+
+export type BusinessLocationPermissions = {
+  role: "member" | "manager";
+  listingAccess: "own" | "all";
+  listingEditScope: "none" | "own" | "all";
+  chatAccess: "own" | "all";
+};
+
+export type BusinessLocation = {
+  id: string;
+  organization_id: string;
+  name: string;
+  address_line: string | null;
+  postal_code: string | null;
+  city: string | null;
+  lat: number | null;
+  lng: number | null;
+  is_default: boolean;
+  active: boolean;
+  show_visiting_address: boolean;
+  contacts: BusinessLocationContact[];
+  created_at: string;
+  updated_at: string;
+  permissions: BusinessLocationPermissions;
+};
+
+export type BusinessLocationContact = {
+  id: string;
+  name: string;
+  phone: string;
+  avatar_path: string | null;
+  show_in_listings: boolean;
+};
+
+export type BusinessOrganization = {
+  verification_status?: "unverified" | "verified";
+  id: string;
+  organization_number: string;
+  legal_name: string;
+  display_name: string;
+  selected_plan: BusinessPlan | null;
+  proff_trial_started_at: string | null;
+  proff_trial_ends_at: string | null;
+  proff_trial_cancelled_at: string | null;
+  proff_subscription_cancelled_at: string | null;
+  proff_ended_by_kaupet_at: string | null;
+  welcome_email_sent_at: string | null;
+  proff_access_until: string | null;
+  website_url: string | null;
+  logo_path: string | null;
+  /** Palett-ID (se BRAND_PALETTES) eller egendefinert «#rrggbb». */
+  brand_palette: string | null;
+  /** Profilering på alle bedriftens offentlige annonser. */
+  listing_concept: "signatur" | "redaksjonell" | "butikk";
+  listing_font: "newsreader" | "inter" | "dm_sans" | "source_serif_4";
+  listing_overtitle: "annonse_fra" | "presentert_av" | "bedriftsannonse";
+  created_at: string;
+  updated_at: string;
+};
+
+export type BusinessMembership = {
+  organization_id: string;
+  user_id: string;
+  role: "superuser" | "member";
+  status: "active";
+  can_create_listings: boolean;
+  category_access: "all" | "restricted";
+  allowed_category_ids: string[];
+  created_at: string;
+  updated_at: string;
+  organization: BusinessOrganization;
+  locations: BusinessLocation[];
+  billingProfile: {
+    organization_id: string;
+    billing_email: string;
+    address_line: string | null;
+    postal_code: string | null;
+    city: string | null;
+    registry_refreshed_at: string | null;
+    payment_receipts: boolean;
+  } | null;
+};
+
+type BusinessOrganizationResponse = Awaited<
+  ReturnType<ReturnType<typeof useServerFn<typeof getBusinessOrganization>>>
+>;
+
+/** The single client-side membership query used by menu, account page, and console. */
+export function useBusinessMembership() {
+  const { user } = useAuth();
+  const loadBusinessOrganization = useServerFn(getBusinessOrganization);
+
+  return useQuery({
+    queryKey: ["business-membership", user?.id],
+    enabled: !!user,
+    staleTime: 30_000,
+    queryFn: async (): Promise<BusinessMembership | null> => {
+      if (!user) return null;
+      const response = (await loadBusinessOrganization().catch((error: unknown) => {
+        if (error instanceof Error && error.message === UNAUTHORIZED_MESSAGE) return null;
+        throw error;
+      })) as BusinessOrganizationResponse | null;
+      if (!response?.membership || response.membership.status !== "active") return null;
+      return {
+        ...response.membership,
+        organization: response.organization as BusinessOrganization,
+        locations: response.locations as BusinessLocation[],
+        billingProfile: response.billingProfile,
+      } as BusinessMembership;
+    },
+  });
+}

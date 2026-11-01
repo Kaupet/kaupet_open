@@ -1,0 +1,122 @@
+import { formatNokNumber } from "@/lib/format";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { ListChecks, Loader2, ShoppingBag, Star } from "lucide-react";
+
+import { Card, CardContent } from "@/components/ui/card";
+import { StarRating } from "@/components/star-rating";
+import { getMyProfileStats } from "@/lib/profile.functions";
+import { formatErrorMessage } from "@/lib/errors";
+import { NewListingDialog } from "@/components/new-listing-dialog";
+
+export function StatCell({
+  label,
+  value,
+  icon,
+  children,
+}: {
+  label: string;
+  value?: string;
+  icon: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1.5 px-4 py-5 text-center">
+      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+        {icon} {label}
+      </span>
+      <div className="flex min-h-7 items-center justify-center">
+        {value !== undefined ? (
+          <span className="text-xl font-semibold tabular-nums">{value}</span>
+        ) : (
+          children
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function ProfileStats() {
+  const [newListingOpen, setNewListingOpen] = useState(false);
+  const getStats = useServerFn(getMyProfileStats);
+  const {
+    data: stats,
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
+    queryKey: ["my-profile-stats"],
+    queryFn: () => getStats({}),
+  });
+
+  if (isError) {
+    return (
+      <Card>
+        <CardContent className="py-6">
+          <p className="text-sm text-destructive">
+            {formatErrorMessage(error, "Kunne ikke laste statistikken")}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (isLoading || !stats) {
+    return (
+      <Card>
+        <CardContent className="grid grid-cols-3 divide-x divide-border p-0">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-center py-8">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardContent className="grid grid-cols-3 divide-x divide-border p-0">
+        <StatCell label="Annonser" icon={<ListChecks className="size-3.5" />}>
+          {stats.listings_count > 0 ? (
+            <span className="text-xl font-semibold tabular-nums">
+              {formatNokNumber(stats.listings_count)}
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setNewListingOpen(true)}
+              className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+            >
+              Opprett din første
+            </button>
+          )}
+        </StatCell>
+        <StatCell label="Salg" icon={<ShoppingBag className="size-3.5" />}>
+          {stats.sales_count > 0 ? (
+            <span className="text-xl font-semibold tabular-nums">
+              {formatNokNumber(stats.sales_count)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">Ingen ennå</span>
+          )}
+        </StatCell>
+        <StatCell label="Vurdering" icon={<Star className="size-3.5" />}>
+          {stats.review_count > 0 ? (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xl font-semibold tabular-nums">
+                {stats.avg_rating.toFixed(1)}
+              </span>
+              <StarRating value={stats.avg_rating} readOnly size={14} />
+            </div>
+          ) : (
+            <span className="text-xs text-muted-foreground">Ingen ennå</span>
+          )}
+        </StatCell>
+      </CardContent>
+      <NewListingDialog open={newListingOpen} onOpenChange={setNewListingOpen} />
+    </Card>
+  );
+}

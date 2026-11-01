@@ -1,0 +1,576 @@
+import { formatWtbMaxPrice } from "@/lib/format";
+import { useRef, useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { Loader2, Pencil, Trash2, Plus } from "lucide-react";
+import { isTurnstileEnabled, Turnstile, type TurnstileInstance } from "@/components/turnstile";
+import { showSuccessToast, showErrorToast } from "@/lib/toast";
+
+import { supabase } from "@/integrations/supabase/client";
+import { republishListing } from "@/lib/listings.functions";
+import { getMyListingRows } from "@/lib/my-listings.functions";
+import { getMyActivePromotions } from "@/lib/promotions.functions";
+import { PromoteListingDialog } from "@/components/promote-listing-dialog";
+import { MarkSoldDialog } from "@/components/listing-detail/mark-sold-dialog";
+import { useAuth } from "@/hooks/use-auth";
+import { useIsNative } from "@/hooks/use-is-native";
+import { hapticImpact, hapticNotification } from "@/lib/haptics";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { formatErrorMessage } from "@/lib/errors";
+import { getMyWtbListings, deleteWtbListing } from "@/lib/wtb-listings.functions";
+import { WTB_AVAILABLE } from "@/features/wtb/availability";
+import { formatDistanceToNow } from "date-fns";
+import { nb } from "date-fns/locale";
+import { useAllCategoryFilters } from "@/components/attribute-fields";
+import { useCategories } from "@/hooks/use-categories";
+import { valueGroupFor } from "@/lib/category-filters";
+import { getCategoryBehavior } from "@/lib/category-behavior";
+
+import { NativePageHeader } from "@/components/native-page-header";
+import { PullToRefreshIndicator } from "@/components/pull-to-refresh-indicator";
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
+import { ListingRow } from "@/features/my-listings/listing-row";
+import { NewListingDialog } from "@/components/new-listing-dialog";
+import { SITE_NAME } from "@/lib/site";
+
+export const Route = createFileRoute("/_authenticated/mine-annonser/")({
+  // Annonsene hentes på serveren slik at siden har innhold ved første maling.
+  // Uten denne lå de i en useQuery som først kjørte etter hydrering, og body
+  // var tom til da.
+  loader: async ({ context }) => ({
+    userId: context.user.id,
+    rows: await getMyListingRows(),
+  }),
+  head: () => ({
+    meta: [
+      { title: `Mine annonser — ${SITE_NAME}` },
+      { name: "description", content: `Administrer dine annonser på ${SITE_NAME}.` },
+    ],
+  }),
+  component: MyListingsPage,
+});
+
+function MyListingsPage() {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [tab, setTab] = useState<"all" | "active" | "sold" | "draft" | "wtb">("all");
+  const [publishWarning, setPublishWarning] = useState<{
+    id: string;
+    kaupetCode: string;
+    missingTitle: boolean;
+    missingCategory: boolean;
+    missingDescription: boolean;
+    missingLocation: boolean;
+    missingPrice: boolean;
+    missingImages: boolean;
+  } | null>(null);
+  const [promoteId, setPromoteId] = useState<string | null>(null);
+  const [markSoldId, setMarkSoldId] = useState<string | null>(null);
+  const [newListingIntent, setNewListingIntent] = useState<"sell" | "buy" | null>(null);
+  const native = useIsNative();
+
+  const { refreshing, pullDistance } = usePullToRefresh({
+    enabled: native,
+    onRefresh: async () => {
+      await queryClient.resetQueries({ queryKey: ["my-listings"] });
+      await queryClient.resetQueries({ queryKey: ["my-wtb-listings"] });
+    },
+  });
+
+  const { data: allFilters } = useAllCategoryFilters();
+  const { data: allCategories } = useCategories();
+  const categoriesById = new Map((allCategories ?? []).map((c) => [c.id, c]));
+  const rowSpin360 = (categoryId: string | null) =>
+    getCategoryBehavior(valueGroupFor(categoryId, allFilters ?? [], categoriesById)).spin360;
+
+  const fetchPromos = useServerFn(getMyActivePromotions);
+  const { data: promos } = useQuery({
+    queryKey: ["my-promotions"],
+    queryFn: () => fetchPromos(),
+  });
+
+  const fetchMyWtb = useServerFn(getMyWtbListings);
+  const deleteWtbFn = useServerFn(deleteWtbListing);
+  const { data: wtbRows = [], isLoading: wtbLoading } = useQuery({
+    queryKey: ["my-wtb-listings"],
+    queryFn: () => fetchMyWtb(),
+    enabled: WTB_AVAILABLE,
+  });
+  const deleteWtbMutation = useMutation({
+    mutationFn: (id: string) => deleteWtbFn({ data: { id } }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["my-wtb-listings"] });
+      showSuccessToast("Ønskes kjøpt-annonsen er slettet");
+    },
+    onError: (e: Error) => showErrorToast(formatErrorMessage(e, "Kunne ikke slette annonsen")),
+  });
+  const activePromoByListing = new Map<string, { expires_at: string | null; is_gift: boolean }>();
+  for (const p of promos ?? []) {
+    if (
+      (p.status === "active" || p.status === "gifted") &&
+      p.expires_at &&
+      new Date(p.expires_at) > new Date()
+    ) {
+      activePromoByListing.set(p.listing_id, { expires_at: p.expires_at, is_gift: p.is_gift });
+    }
+  }
+
+  // Serveren har allerede hentet radene (se loader over). initialData gjør at
+  // første render — også server-renderet — har dataene, mens TanStack Query
+  // fortsatt eier invalidering etter mutasjoner.
+  const initial = Route.useLoaderData();
+  const fetchMyListings = useServerFn(getMyListingRows);
+  const { data: rows } = useQuery({
+    queryKey: ["my-listings", user?.id],
+    enabled: !!user,
+    queryFn: () => fetchMyListings(),
+    // Ved kontobytte kan forrige loaders data finnes til den nye er ferdig.
+    initialData: initial.userId === user?.id ? initial.rows : undefined,
+  });
+
+  const deleteListing = useMutation({
+    mutationFn: async (id: string) => {
+      const { data, error } = await supabase.from("listings").delete().eq("id", id).select("id");
+      if (error) throw error;
+      // RLS kan la DELETE uten tilgang lykkes uten å treffe noe.
+      if (data?.length !== 1) throw new Error("Annonsen ble ikke slettet. Prøv igjen.");
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["my-listings"] });
+      void hapticNotification("success");
+      showSuccessToast("Annonsen er slettet");
+    },
+    onError: (e: Error) => {
+      void hapticNotification("error");
+      showErrorToast(formatErrorMessage(e, "Kunne ikke slette annonsen"));
+    },
+  });
+  const turnstileEnabled = isTurnstileEnabled();
+  const turnstileRef = useRef<TurnstileInstance | null>(null);
+  const [verificationNeeded, setVerificationNeeded] = useState(false);
+  const turnstileContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const doRepublish = useServerFn(republishListing);
+  const republish = useMutation({
+    mutationFn: async (id: string) => {
+      // Utfordringen kjøres først nå (execution: "execute"), ikke ved
+      // sidelasting — ellers kan sjekkboksen dukke opp uten sammenheng.
+      turnstileRef.current?.execute();
+      const turnstileToken = turnstileEnabled
+        ? await turnstileRef.current?.getResponsePromise()
+        : null;
+      return doRepublish({ data: { id, turnstileToken: turnstileToken ?? null } });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["my-listings"] });
+      void hapticNotification("success");
+      showSuccessToast("Annonsen er publisert på nytt i 30 nye dager");
+    },
+    onError: (e: Error) => {
+      void hapticNotification("error");
+      showErrorToast(formatErrorMessage(e, "Kunne ikke publisere annonsen på nytt"));
+    },
+    onSettled: () => {
+      setVerificationNeeded(false);
+      turnstileRef.current?.reset();
+    },
+  });
+
+  const statusCounts = {
+    active: rows?.filter((r) => r.status === "active").length ?? 0,
+    sold:
+      rows?.filter((r) => r.status === "sold" || r.status === "archived" || r.status === "expired")
+        .length ?? 0,
+    draft: rows?.filter((r) => r.status === "draft").length ?? 0,
+  };
+
+  const filtered = (rows ?? []).filter((r) => {
+    if (tab === "all") return true;
+    if (tab === "active") return r.status === "active";
+    if (tab === "sold")
+      return r.status === "sold" || r.status === "archived" || r.status === "expired";
+    if (tab === "draft") return r.status === "draft";
+    return true;
+  });
+
+  return (
+    <>
+      <NativePageHeader title="Mine annonser" backLabel="Meg" backTo="/meg" />
+      {native && <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />}
+      <div className="mx-auto max-w-5xl px-4 py-6">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            {!native && (
+              <h1 className="font-display text-3xl tracking-tight max-sm:hidden">Mine annonser</h1>
+            )}
+            <p className="mt-1 text-muted-foreground">
+              Rediger, fremhev, marker som solgt eller slett annonsene dine.
+            </p>
+          </div>
+          {!native && (
+            <Button onClick={() => setNewListingIntent("sell")}>
+              <Plus className="size-4" /> Ny annonse
+            </Button>
+          )}
+        </div>
+
+        <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="mt-6">
+          {native ? (
+            <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none">
+              {(
+                [
+                  { value: "all", label: `Alle salgsannonser (${rows?.length ?? 0})` },
+                  {
+                    value: "active",
+                    label: `Aktive (${statusCounts.active})`,
+                  },
+                  {
+                    value: "sold",
+                    label: `Solgt / utløpt (${statusCounts.sold})`,
+                  },
+                  {
+                    value: "draft",
+                    label: `Utkast (${statusCounts.draft})`,
+                  },
+                  {
+                    value: "wtb",
+                    label: `Ønskes kjøpt${wtbRows.length > 0 ? ` (${wtbRows.length})` : ""}`,
+                  },
+                ] as const
+              )
+                .filter(({ value }) => WTB_AVAILABLE || value !== "wtb")
+                .map(({ value, label }) => (
+                  <button
+                    key={value}
+                    onClick={() => {
+                      void hapticImpact("light");
+                      setTab(value);
+                    }}
+                    className={`shrink-0 rounded-full border px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
+                      tab === value
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border bg-card text-foreground"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+            </div>
+          ) : (
+            <TabsList className="max-w-full justify-start overflow-x-auto">
+              {/* Alle fanene teller, ikke bare "Alle" — den native varianten
+                  under gjorde det allerede, og en fane uten tall leste som om
+                  den var tom. */}
+              <TabsTrigger value="all">Alle salgsannonser ({rows?.length ?? 0})</TabsTrigger>
+              <TabsTrigger value="active">Aktive ({statusCounts.active})</TabsTrigger>
+              <TabsTrigger value="sold">Solgt / utløpt ({statusCounts.sold})</TabsTrigger>
+              <TabsTrigger value="draft">Utkast ({statusCounts.draft})</TabsTrigger>
+              {WTB_AVAILABLE && (
+                <TabsTrigger value="wtb">
+                  Ønskes kjøpt{wtbRows.length > 0 ? ` (${wtbRows.length})` : ""}
+                </TabsTrigger>
+              )}
+            </TabsList>
+          )}
+          {tab !== "wtb" && (
+            <TabsContent value={tab} className="mt-6">
+              {filtered.length === 0 ? (
+                <EmptyState
+                  title={
+                    rows && rows.length > 0
+                      ? "Ingen annonser i denne kategorien."
+                      : "Ingen annonser å vise her."
+                  }
+                  action={
+                    <Button size="sm" variant="outline" onClick={() => setNewListingIntent("sell")}>
+                      <Plus className="size-4" />{" "}
+                      {rows && rows.length > 0
+                        ? "Opprett en annonse"
+                        : "Opprett din første annonse"}
+                    </Button>
+                  }
+                />
+              ) : (
+                <ul className="space-y-3">
+                  {filtered.map((r) => (
+                    <ListingRow
+                      key={r.id}
+                      row={r}
+                      spin360={rowSpin360(r.category_id)}
+                      activePromotion={activePromoByListing.get(r.id) ?? null}
+                      onPromote={() => setPromoteId(r.id)}
+                      onMarkSold={() => setMarkSoldId(r.id)}
+                      onReactivate={() => republish.mutate(r.id)}
+                      onRepublish={() => republish.mutate(r.id)}
+                      onPublishDraft={() => {
+                        const missingTitle = !r.title?.trim();
+                        const missingCategory = !r.category_id;
+                        const missingDescription = !r.description?.trim();
+                        const missingLocation = !r.city?.trim();
+                        const missingPrice = !r.is_free && r.price_nok === null;
+                        const missingImages = r.cover_path === null;
+                        if (
+                          missingTitle ||
+                          missingCategory ||
+                          missingDescription ||
+                          missingLocation ||
+                          missingPrice ||
+                          missingImages
+                        ) {
+                          setPublishWarning({
+                            id: r.id,
+                            kaupetCode: r.kaupet_code,
+                            missingTitle,
+                            missingCategory,
+                            missingDescription,
+                            missingLocation,
+                            missingPrice,
+                            missingImages,
+                          });
+                        } else {
+                          republish.mutate(r.id);
+                        }
+                      }}
+                      onDelete={() => deleteListing.mutate(r.id)}
+                      busy={deleteListing.isPending || republish.isPending}
+                    />
+                  ))}
+                </ul>
+              )}
+            </TabsContent>
+          )}
+
+          <TabsContent value="wtb" className="mt-6">
+            {wtbLoading ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" /> Laster…
+              </div>
+            ) : wtbRows.length === 0 ? (
+              <EmptyState
+                title="Du har ingen ønskes kjøpt-annonser ennå."
+                action={
+                  <Button size="sm" variant="outline" onClick={() => setNewListingIntent("buy")}>
+                    <Plus className="size-4" /> Opprett en ønskes kjøpt-annonse
+                  </Button>
+                }
+              />
+            ) : (
+              <ul className="space-y-3">
+                {wtbRows.map((w) => (
+                  <li
+                    key={w.id}
+                    className="flex items-start justify-between gap-4 rounded-xl border bg-card p-4"
+                  >
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium">{w.title}</p>
+                        {w.status === "draft" && <Badge variant="outline">Utkast</Badge>}
+                        {w.status === "fulfilled" && <Badge variant="secondary">Oppfylt</Badge>}
+                      </div>
+                      {w.description && (
+                        <p className="line-clamp-2 text-sm text-muted-foreground">
+                          {w.description}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {w.categories && <span>{w.categories.name_nb}</span>}
+                        {w.max_price_nok != null && (
+                          <span>· {formatWtbMaxPrice(w.max_price_nok, "Maks ")}</span>
+                        )}
+                        <span>
+                          ·{" "}
+                          {formatDistanceToNow(new Date(w.created_at), {
+                            addSuffix: true,
+                            locale: nb,
+                          })}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {w.status === "draft" ? (
+                        <Link to="/ny-ok-annonse">
+                          <Button size="sm" variant="outline">
+                            Fortsett
+                          </Button>
+                        </Link>
+                      ) : (
+                        <Link to="/ok/$id" params={{ id: w.id }} search={{ edit: true }}>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="text-muted-foreground"
+                            aria-label="Rediger"
+                          >
+                            <Pencil className="size-4" />
+                          </Button>
+                        </Link>
+                      )}
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="text-muted-foreground hover:text-destructive"
+                            aria-label="Slett"
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Slett ønskes kjøpt-annonse?</AlertDialogTitle>
+                            <AlertDialogDescription>Dette kan ikke angres.</AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Avbryt</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => deleteWtbMutation.mutate(w.id)}>
+                              Slett
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </TabsContent>
+        </Tabs>
+        {turnstileEnabled && (
+          <div ref={turnstileContainerRef} className="mx-auto mt-4 w-fit max-w-full">
+            {verificationNeeded && (
+              <p role="status" className="mb-2 text-sm text-foreground">
+                Bekreft Cloudflare-sjekken for å publisere annonsen på nytt.
+              </p>
+            )}
+            <Turnstile
+              ref={turnstileRef}
+              siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY}
+              options={{ appearance: "interaction-only", action: "kaupet", execution: "execute" }}
+              onBeforeInteractive={() => {
+                setVerificationNeeded(true);
+                // Widgeten står under lista — knappen kan sitte langt over.
+                turnstileContainerRef.current?.scrollIntoView({ block: "center" });
+              }}
+              onSuccess={() => setVerificationNeeded(false)}
+            />
+          </div>
+        )}
+
+        {promoteId && (
+          <PromoteListingDialog
+            listingId={promoteId}
+            open={!!promoteId}
+            onOpenChange={(o) => !o && setPromoteId(null)}
+          />
+        )}
+
+        {markSoldId && (
+          <MarkSoldDialog
+            listingId={markSoldId}
+            open={!!markSoldId}
+            onOpenChange={(o) => !o && setMarkSoldId(null)}
+          />
+        )}
+
+        {publishWarning &&
+          (() => {
+            const hasBlockingIssues =
+              publishWarning.missingTitle ||
+              publishWarning.missingCategory ||
+              publishWarning.missingDescription ||
+              publishWarning.missingLocation;
+            return (
+              <AlertDialog open onOpenChange={(o) => !o && setPublishWarning(null)}>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Annonsen mangler informasjon</AlertDialogTitle>
+                    <AlertDialogDescription asChild>
+                      <div>
+                        {hasBlockingIssues && (
+                          <>
+                            <p className="mb-2 font-medium">Må fylles inn før publisering:</p>
+                            <ul className="list-disc pl-5 space-y-1 mb-3">
+                              {publishWarning.missingTitle && <li>Tittel mangler</li>}
+                              {publishWarning.missingCategory && <li>Kategori er ikke valgt</li>}
+                              {publishWarning.missingDescription && <li>Beskrivelse mangler</li>}
+                              {publishWarning.missingLocation && <li>Sted / lokasjon mangler</li>}
+                            </ul>
+                          </>
+                        )}
+                        {(publishWarning.missingImages || publishWarning.missingPrice) && (
+                          <>
+                            <p className="mb-2 font-medium">
+                              {hasBlockingIssues
+                                ? "Anbefalt å fylle inn:"
+                                : "Følgende felter er ikke utfylt:"}
+                            </p>
+                            <ul className="list-disc pl-5 space-y-1">
+                              {publishWarning.missingImages && <li>Ingen bilder lagt til</li>}
+                              {publishWarning.missingPrice && <li>Ingen pris satt</li>}
+                            </ul>
+                          </>
+                        )}
+                        <p className="mt-3">
+                          {hasBlockingIssues
+                            ? "Gå til annonsen for å legge inn manglende informasjon."
+                            : "Gå til annonsen for å legge inn manglende informasjon, eller publiser likevel."}
+                        </p>
+                      </div>
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Avbryt</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-background text-foreground border border-input hover:bg-accent hover:text-accent-foreground"
+                      onClick={() => {
+                        void navigate({
+                          to: "/$kaupetCode",
+                          params: { kaupetCode: publishWarning.kaupetCode },
+                          search: { edit: true },
+                        });
+                        setPublishWarning(null);
+                      }}
+                    >
+                      Gå til annonsen
+                    </AlertDialogAction>
+                    {!hasBlockingIssues && (
+                      <AlertDialogAction
+                        onClick={() => {
+                          republish.mutate(publishWarning.id);
+                          setPublishWarning(null);
+                        }}
+                      >
+                        Publiser likevel
+                      </AlertDialogAction>
+                    )}
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            );
+          })()}
+      </div>
+      <NewListingDialog
+        open={newListingIntent !== null}
+        onOpenChange={(o) => !o && setNewListingIntent(null)}
+        defaultIntent={newListingIntent ?? undefined}
+      />
+    </>
+  );
+}

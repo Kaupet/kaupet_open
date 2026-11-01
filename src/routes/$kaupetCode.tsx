@@ -1,0 +1,873 @@
+import {
+  createFileRoute,
+  type ErrorComponentProps,
+  isNotFound,
+  Link,
+  notFound,
+  useNavigate,
+  useRouter,
+} from "@tanstack/react-router";
+import {
+  LISTING_RESERVATION_COLUMN,
+  listingReservedUntil,
+} from "@/components/meldinger/trade-availability";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
+import { reconcilePromotionPayment } from "@/lib/promotions.functions";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MessageCircle } from "lucide-react";
+import { toast } from "sonner";
+import { showSuccessToast, showErrorToast } from "@/lib/toast";
+import { z } from "zod";
+import { useIsNative } from "@/hooks/use-is-native";
+import { useIsAdmin, useIsModerator } from "@/hooks/use-user-roles";
+import { ListingActionsMenu } from "@/components/listing-detail/listing-actions-menu";
+
+import { supabase } from "@/integrations/supabase/client";
+import { describeSafeError } from "@/lib/safe-error";
+import { useAuth } from "@/hooks/use-auth";
+import { SearchResultsPage } from "@/features/listing-search/search-results-page";
+import { breadcrumbPath, buildTree, type Category } from "@/lib/categories";
+import { organizationLogoUrl } from "@/lib/organization-logo-url";
+import { encodeAttrFilters } from "@/features/listing-search/search-schema";
+import { normalizeSlugForMatch } from "@/lib/slug";
+import { displayPriceNok, formatNokNumber } from "@/lib/format";
+
+import { searchSchema, searchSchemaWithoutDefaults } from "@/features/listing-search/search-schema";
+import { signListingImageUrls, signSpin360FrameUrls } from "@/lib/storage";
+import { Button } from "@/components/ui/button";
+import { OwnerStatsPanel } from "@/components/listing-detail/owner-stats-panel";
+import { SellerContactPanel } from "@/components/listing-detail/seller-contact-panel";
+import type { SellerIdentity } from "@/components/listing-detail/seller-contact-panel";
+import { ListingDetailView } from "@/components/listing-detail/listing-detail-view";
+import { ListingLoadError } from "@/components/listing-detail/listing-load-error";
+import type { ListingOrganizationBrand } from "@/components/listing-detail/listing-detail-view";
+import { ProffRelatedListings } from "@/components/listing-detail/proff-listing-presentation";
+import type { ProffOrganizationPresentation } from "@/components/listing-detail/proff-listing-types";
+import { getCategoryBehavior } from "@/lib/category-behavior";
+import { genericBrandFilterFor, isBoatCategory, valueGroupFor } from "@/lib/category-filters";
+import { useAllCategoryFilters } from "@/components/attribute-fields";
+import { useCategories } from "@/hooks/use-categories";
+import { useListingEditMutations } from "@/features/listing-edit/use-listing-edit-mutations";
+import { CategoryChangeDialog } from "@/features/listing-edit/category-change-dialog";
+import type { ListingEditContextValue } from "@/features/listing-edit/edit-mode-context";
+import { ListingDetailSkeleton } from "@/components/listing-detail-skeleton";
+import { verticals } from "@/lib/verticals";
+import { currentReturnTo } from "@/lib/auth-return";
+import { savePendingAuthIntent, takePendingAuthIntent } from "@/lib/pending-auth-intent";
+import { logListingView } from "@/lib/listing-views.functions";
+import { publicImageUrl } from "@/lib/image-url";
+import { SITE_NAME, SITE_URL } from "@/lib/site";
+import {
+  LISTING_ORGANIZATION_COLUMN,
+  listingBusinessData,
+  listingOrganizationId,
+  organizationOtherListings,
+} from "@/lib/listing-business-data";
+import { reviewSummary } from "@/lib/review-summary";
+import { listingOwnerStats, listingActivePromotion } from "@/lib/listing-owner-extras";
+
+// This route serves two very different pages behind one dynamic segment: a
+// listing (8-digit kaupet-koder) and a main-category landing page (any other
+// slug) — see the loader below. Only the category branch needs the full
+// /annonser search schema (it renders the same filter UI as /annonser); the
+// listing branch and any address that matches neither only read `promotion`,
+// `promo_id`, `sub` and `edit`. `searchSchema` itself fills in a default for
+// every optional field (q: "", sort: "new", ...), and TanStack Router
+// canonicalizes the URL to match whatever validateSearch returns — so
+// extending the full schema here made *every* unknown address (not just
+// categories) redirect once to itself with all nine defaults appended as
+// query params. `searchSchemaWithoutDefaults` keeps a genuinely absent param
+// absent, so those defaults are only filled in where a category page actually
+// needs them (see `searchSchema.parse(search)` in RootSlugPage below), not
+// written into the URL of pages that never asked for them.
+// Exported for -kaupetCode.test.ts — see the comment above.
+export const kaupetCodeSearchSchema = searchSchemaWithoutDefaults.extend({
+  promotion: z.string().optional(),
+  promo_id: z.string().optional(),
+  // Slug of a descendant category to scope the page to, without leaving
+  // this URL — e.g. Interiør > Møbler > Sofa still lands on /interiør.
+  sub: z.string().optional(),
+  // Owner inline-editing toggle — a search param (not local state) so it
+  // survives a reload while editing.
+  edit: z.coerce.boolean().optional(),
+});
+
+export const Route = createFileRoute("/$kaupetCode")({
+  validateSearch: kaupetCodeSearchSchema,
+  loader: async ({ params }) => {
+    // A single dynamic root segment serves two purposes: an 8-digit code is
+    // always a listing (kaupet-koder are numeric by construction), anything
+    // else is looked up as a main category's landing page slug. Two separate
+    // routes at "/$..." would be ambiguous, so both live in this one loader.
+    if (/^[0-9]{8}$/.test(params.kaupetCode)) {
+      const { data, error } = await supabase
+        .from("listings")
+        .select(
+          // attributes + categories(slug) are only here for displayPriceNok:
+          // a vehicle's meta title, og:title and schema.org price have to be
+          // the same number the page and the search cards show, or Google
+          // advertises a price the buyer never sees.
+          "id, kaupet_code, title, description, price_nok, is_free, condition, city, updated_at, published_at, status, attributes, categories(slug)",
+        )
+        .eq("kaupet_code", params.kaupetCode)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw notFound({ data: { reason: "listing" } });
+      return { kind: "listing" as const, listing: data };
+    }
+
+    const { data: mains, error: catError } = await supabase
+      .from("categories")
+      .select("id, slug, name_nb, parent_id, icon, color")
+      .eq("is_hidden", false)
+      .is("parent_id", null);
+    if (catError) throw catError;
+    const exact = (mains ?? []).find((c) => c.slug === params.kaupetCode);
+    const normalizedSlug = normalizeSlugForMatch(params.kaupetCode);
+    const category =
+      exact ?? (mains ?? []).find((c) => normalizeSlugForMatch(c.slug) === normalizedSlug);
+    // Neither an 8-digit code nor a known category slug — this is any
+    // unknown address, e.g. a typo'd link or a route that never existed.
+    if (!category) throw notFound({ data: { reason: "unknown" } });
+    return { kind: "category" as const, category: category as Category };
+  },
+  head: ({ params, loaderData, match }) => {
+    if (loaderData?.kind === "category") {
+      const c = loaderData.category;
+      const title = `${c.name_nb} — kjøp og selg brukt på ${SITE_NAME}`;
+      const description = `Se annonser i ${c.name_nb} på ${SITE_NAME}. Kjøp og selg brukt trygt og enkelt.`;
+      const url = `${SITE_URL}/${c.slug}`;
+      return {
+        meta: [
+          { title },
+          { name: "description", content: description },
+          { property: "og:title", content: title },
+          { property: "og:description", content: description },
+          { property: "og:url", content: url },
+        ],
+        links: [{ rel: "canonical", href: url }],
+        scripts: [
+          {
+            type: "application/ld+json",
+            children: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "BreadcrumbList",
+              itemListElement: [
+                {
+                  "@type": "ListItem",
+                  position: 1,
+                  name: "Alle kategorier",
+                  item: `${SITE_URL}/annonser`,
+                },
+                { "@type": "ListItem", position: 2, name: c.name_nb, item: url },
+              ],
+            }),
+          },
+          {
+            type: "application/ld+json",
+            children: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "CollectionPage",
+              name: title,
+              description,
+              url,
+            }),
+          },
+        ],
+      };
+    }
+    const l = loaderData?.kind === "listing" ? loaderData.listing : undefined;
+    if (!l) {
+      const notFoundReason = isNotFound(match.error)
+        ? (match.error.data as { reason?: "listing" | "unknown" } | undefined)?.reason
+        : undefined;
+      const title =
+        notFoundReason === "listing"
+          ? `Annonsen finnes ikke — ${SITE_NAME}`
+          : `Siden finnes ikke — ${SITE_NAME}`;
+      return {
+        meta: [{ title }, { name: "robots", content: "noindex" }],
+      };
+    }
+    const displayPrice = displayPriceNok({
+      category_slug: (Array.isArray(l.categories) ? l.categories[0] : l.categories)?.slug ?? null,
+      price_nok: l.price_nok,
+      attributes: (l.attributes ?? null) as Record<string, unknown> | null,
+    });
+    const priceLabel = l.is_free
+      ? "Gis bort gratis"
+      : displayPrice != null
+        ? `${formatNokNumber(displayPrice)} kr`
+        : "Pris ved henvendelse";
+    const place = l.city ? ` i ${l.city}` : "";
+    const rawTitle = `${l.title} — ${priceLabel}${place} | ${SITE_NAME}`;
+    const title = rawTitle.length > 60 ? `${l.title} — ${priceLabel} | ${SITE_NAME}` : rawTitle;
+    const baseDesc = (l.description ?? "").replace(/\s+/g, " ").trim();
+    const descCore = baseDesc
+      ? baseDesc.length > 130
+        ? `${baseDesc.slice(0, 127)}…`
+        : baseDesc
+      : `${l.title}${place}. ${priceLabel} på ${SITE_NAME}.`;
+    const description =
+      descCore.length < 60
+        ? `${descCore} ${priceLabel}${place}. Selges på ${SITE_NAME}.`
+        : descCore;
+    const url = `${SITE_URL}/${params.kaupetCode}`;
+    const isActive = (l.status as string | undefined) === "active";
+    return {
+      meta: [
+        { title },
+        { name: "description", content: description },
+        ...(!isActive ? [{ name: "robots", content: "noindex" }] : []),
+        { property: "og:title", content: title },
+        { property: "og:description", content: description },
+        { property: "og:type", content: "product" },
+        { property: "og:url", content: url },
+        { name: "twitter:title", content: title },
+        { name: "twitter:description", content: description },
+      ],
+      links: [{ rel: "canonical", href: url }],
+      scripts: [
+        {
+          type: "application/ld+json",
+          children: JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "Product",
+            name: l.title,
+            description: descCore,
+            url,
+            offers: {
+              "@type": "Offer",
+              priceCurrency: "NOK",
+              price: l.is_free ? 0 : (displayPrice ?? undefined),
+              availability: isActive
+                ? "https://schema.org/InStock"
+                : "https://schema.org/OutOfStock",
+              url,
+            },
+          }),
+        },
+      ],
+    };
+  },
+  component: RootSlugPage,
+  pendingComponent: ListingDetailSkeleton,
+  pendingMs: 200,
+  pendingMinMs: 300,
+  errorComponent: ListingErrorBoundary,
+  notFoundComponent: ({ data }) => {
+    // Set via `notFound({ data: { reason } })` above: "listing" is an
+    // 8-digit kaupet-kode that no longer resolves to an ad; "unknown" is
+    // every other address this catch-all route sees, which was never an ad
+    // to begin with (a typo, a stale link, a route that doesn't exist).
+    const reason = (data as { reason?: "listing" | "unknown" } | undefined)?.reason;
+    return <RouteNotFound isListing={reason === "listing"} />;
+  },
+});
+
+/** Annonsen fantes da loaderen kjørte, men klientens query finner den ikke
+ * (fjernet i mellomtiden). Vises som «ikke funnet», ikke som lastefeil. */
+class ListingNotFoundError extends Error {
+  constructor() {
+    super("Annonsen finnes ikke");
+  }
+}
+
+function RouteNotFound({ isListing }: { isListing: boolean }) {
+  return (
+    <div className="mx-auto max-w-2xl px-4 py-20 text-center">
+      <h1 className="font-display text-2xl">
+        {isListing ? "Fant ikke annonsen" : "Fant ikke siden"}
+      </h1>
+      <p className="mt-2 text-sm text-muted-foreground">
+        {isListing
+          ? "Annonsen kan ha blitt fjernet eller solgt."
+          : "Siden du prøvde å åpne finnes ikke."}
+      </p>
+      <Link to="/annonser" search={{ q: "", category: "", sort: "new" }}>
+        <Button className="mt-6" variant="outline">
+          Se flere annonser
+        </Button>
+      </Link>
+    </div>
+  );
+}
+
+function RootSlugPage() {
+  const loaderData = Route.useLoaderData();
+  const search = Route.useSearch();
+  const navigate = useNavigate({ from: "/$kaupetCode" });
+  if (loaderData.kind === "category")
+    return (
+      <SearchResultsPage
+        scope={{
+          category: loaderData.category,
+          breadcrumb: [loaderData.category],
+          subSlug: search.sub,
+          subSlugParam: "sub",
+        }}
+        // SearchResultsPage expects the full, defaulted /annonser search
+        // shape (e.g. search.q.trim()). The route itself only validates the
+        // fields present in the URL (see the validateSearch comment above),
+        // so fill in the rest here rather than back on every other address.
+        search={searchSchema.parse(search)}
+        navigate={navigate}
+      />
+    );
+  return <ListingDetailPage />;
+}
+
+function ListingErrorBoundary({ error, reset }: ErrorComponentProps) {
+  const router = useRouter();
+  console.error("[listing route] error", describeSafeError(error));
+  return (
+    <ListingLoadError
+      error={error}
+      onRetry={() => {
+        router.invalidate();
+        reset();
+      }}
+    />
+  );
+}
+
+function ListingDetailPage() {
+  const { kaupetCode } = Route.useParams();
+  const search = Route.useSearch();
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const isNative = useIsNative();
+  const { data: isAdmin } = useIsAdmin();
+  const { data: isModerator } = useIsModerator();
+  const [statsInfoOpen, setStatsInfoOpen] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+
+  const reconcilePromotion = useServerFn(reconcilePromotionPayment);
+  const logView = useServerFn(logListingView);
+  useEffect(() => {
+    if (search.promotion !== "success" || !search.promo_id) return;
+    const promoId = search.promo_id;
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    const finish = () => {
+      if (cancelled) return;
+      navigate({
+        to: "/$kaupetCode",
+        params: { kaupetCode },
+        search: {},
+        replace: true,
+      });
+    };
+
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const res = await reconcilePromotion({ data: { promotion_id: promoId } });
+        if (cancelled) return;
+        if (res.status === "active" || res.status === "gifted") {
+          showSuccessToast("Fremhevingen er aktivert");
+          queryClient.invalidateQueries({ queryKey: ["listing-active-promotion"] });
+          queryClient.invalidateQueries({ queryKey: ["featured-listings"] });
+          queryClient.invalidateQueries({ queryKey: ["my-listings"] });
+          finish();
+          return;
+        }
+        if (res.status === "failed") {
+          showErrorToast("Betalingen ble ikke fullført. Fremhevingen er ikke aktivert.");
+          finish();
+          return;
+        }
+        if (res.status === "refunded") {
+          toast.message("Betalingen er refundert.");
+          finish();
+          return;
+        }
+        if (attempts >= maxAttempts) {
+          toast.message(
+            "Vi venter på bekreftelse fra Vipps. Siden oppdateres så snart betalingen er bekreftet.",
+          );
+          finish();
+          return;
+        }
+        setTimeout(poll, 1500);
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[promotion reconcile]", describeSafeError(e));
+        if (attempts >= maxAttempts) {
+          showErrorToast("Kunne ikke bekrefte betalingen. Prøv igjen senere.");
+          finish();
+          return;
+        }
+        setTimeout(poll, 1500);
+      }
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.promotion, search.promo_id]);
+
+  const { data, isLoading, isFetching, error, refetch } = useQuery({
+    queryKey: ["listing", kaupetCode],
+    queryFn: async () => {
+      const [{ data: row, error }, listing360Frames] = await Promise.all([
+        supabase
+          .from("listings")
+          .select(
+            `id, kaupet_code, title, subtitle, description, price_nok, is_free, condition, can_ship, city, postal_code, display_lat, display_lng, created_at, updated_at, published_at, status${LISTING_RESERVATION_COLUMN}, seller_id${LISTING_ORGANIZATION_COLUMN}, category_id, attributes, known_issues, no_known_issues, maintenance_history, listing_images(storage_path, sort_order, caption, ai_generated), categories(id, name_nb, slug, parent_id)`,
+          )
+          .eq("kaupet_code", kaupetCode)
+          .maybeSingle(),
+        // 360-rammene kommer fra vertikalen; uten den (kaupet_open) er det ingen.
+        verticals.fetchListing360Frames?.(kaupetCode) ?? Promise.resolve([]),
+      ]);
+      if (error) throw error;
+      if (!row) throw new ListingNotFoundError();
+      const data = { ...row, listing_360_frames: listing360Frames };
+
+      const businessData = await listingBusinessData(data.id, listingOrganizationId(data));
+      const organization = businessData?.organization ?? null;
+      if (organization) {
+        const contact = businessData?.contact ?? null;
+        const visitingAddress = contact?.visiting_address ?? null;
+        return {
+          ...data,
+          organization,
+          visitingLocation:
+            visitingAddress?.lat != null && visitingAddress.lng != null
+              ? { lat: visitingAddress.lat, lng: visitingAddress.lng }
+              : null,
+          seller: {
+            kind: "business" as const,
+            organizationId: organization.id,
+            displayName: organization.display_name,
+            organizationNumber: organization.organization_number,
+            visitingAddress: visitingAddress
+              ? [visitingAddress.address_line, visitingAddress.postal_code, visitingAddress.city]
+                  .filter(Boolean)
+                  .join(", ")
+              : null,
+            contacts: (contact?.contacts ?? []).map((person) => ({
+              id: person.id,
+              name: person.name,
+              phone: person.phone,
+              avatarUrl: person.avatar_path ? publicImageUrl(person.avatar_path) : null,
+            })),
+            createdAt: organization.created_at,
+          } satisfies SellerIdentity,
+        };
+      }
+
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("display_name, avatar_url, created_at")
+        .eq("id", data.seller_id)
+        .maybeSingle();
+      const rating = await reviewSummary(supabase, data.seller_id);
+      return {
+        ...data,
+        organization: null,
+        visitingLocation: null,
+        seller: profile
+          ? {
+              kind: "private" as const,
+              ...profile,
+              avg_rating: rating.avg_rating,
+              review_count: rating.review_count,
+            }
+          : null,
+      };
+    },
+    // Et nytt forsøk finner ikke en fjernet annonse. Ellers samme ene forsøk
+    // som QueryClient-standarden (`retry: 1` i src/router.tsx).
+    retry: (failureCount, error) => !(error instanceof ListingNotFoundError) && failureCount < 1,
+  });
+  const organization = data?.organization ?? null;
+  const hasEffectiveOrganizationProff = organization?.has_active_proff ?? false;
+  const {
+    data: otherOrganizationListings,
+    isLoading: otherListingsLoading,
+    isError: otherListingsError,
+  } = useQuery({
+    queryKey: ["organization-listings", organization?.id, data?.id],
+    enabled: hasEffectiveOrganizationProff && !!organization?.id && !!data?.id,
+    queryFn: async () => {
+      return organizationOtherListings(organization!.id, data!.id);
+    },
+  });
+
+  const { data: allCategories } = useCategories();
+  const listingId = data?.id;
+  const isOwner = !!user && !!data && user.id === data.seller_id;
+
+  const editModeOn = isOwner && !!search.edit;
+  const [plateModalOpen, setPlateModalOpen] = useState(false);
+  const PlateEditDialog = verticals.ListingPlateEditDialog;
+  const Spin360CaptureLauncher = verticals.Spin360CaptureLauncher;
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const { data: allFilters } = useAllCategoryFilters();
+  const categoriesByIdForBehavior = useMemo(() => {
+    const m = new Map<string, { id: string; parent_id: string | null }>();
+    for (const c of allCategories ?? []) m.set(c.id, c);
+    return m;
+  }, [allCategories]);
+  const valueGroup = data?.category_id
+    ? valueGroupFor(data.category_id, allFilters ?? [], categoriesByIdForBehavior)
+    : null;
+  const genericBrandFilter = data?.category_id
+    ? genericBrandFilterFor(data.category_id, allFilters ?? [], categoriesByIdForBehavior)
+    : null;
+  const behavior = getCategoryBehavior(
+    valueGroup,
+    data?.category_id
+      ? isBoatCategory(data.category_id, allFilters ?? [], categoriesByIdForBehavior)
+      : false,
+  );
+  const { saveField, fieldStatus } = useListingEditMutations({
+    listingId: listingId ?? "",
+    kaupetCode,
+    behavior,
+  });
+  const editContext: ListingEditContextValue | undefined = listingId
+    ? {
+        editMode: editModeOn,
+        listingId,
+        behavior,
+        saveField,
+        fieldStatus,
+        openVerticalEditDialog: () => setPlateModalOpen(true),
+        openCategoryModal: () => setCategoryModalOpen(true),
+        getPreciseLocation: async () => {
+          const { data: locations, error } = await supabase.rpc("listing_precise_location", {
+            _listing_id: listingId,
+          });
+          if (error) throw error;
+          const location = locations?.[0];
+          return location ? { lat: location.lat, lng: location.lng } : null;
+        },
+      }
+    : undefined;
+
+  function toggleEditMode() {
+    navigate({
+      to: "/$kaupetCode",
+      params: { kaupetCode },
+      search: (prev) => ({ ...prev, edit: !editModeOn || undefined }),
+      replace: true,
+    });
+  }
+
+  const { data: stats } = useQuery({
+    queryKey: ["listing-stats", listingId],
+    enabled: isOwner && !!listingId,
+    queryFn: () => listingOwnerStats(listingId!),
+  });
+
+  const { data: activePromotion } = useQuery({
+    queryKey: ["listing-active-promotion", listingId],
+    enabled: isOwner && !!listingId,
+    queryFn: () => listingActivePromotion(listingId!),
+  });
+
+  const handleShareOpenChange = useCallback((open: boolean) => {
+    setShareOpen(open);
+  }, []);
+
+  const contactMutation = useMutation({
+    mutationFn: async () => {
+      if (!user) {
+        if (data) savePendingAuthIntent({ type: "contact", listingId: data.id });
+        navigate({
+          to: "/auth",
+          search: { mode: "signin", returnTo: currentReturnTo() },
+        });
+        return null;
+      }
+      if (!data) throw new Error("Mangler annonse");
+      // Slå opp eksisterende samtale
+      const { data: existing } = await supabase
+        .from("conversations")
+        .select("id")
+        .eq("listing_id", data.id)
+        .eq("buyer_id", user.id)
+        .maybeSingle();
+      if (existing?.id) return existing.id;
+      const { data: created, error } = await supabase
+        .from("conversations")
+        .insert({
+          listing_id: data.id,
+          buyer_id: user.id,
+          seller_id: data.seller_id,
+        })
+        .select("id")
+        .single();
+      if (error) throw error;
+      return created.id;
+    },
+    onSuccess: (conversationId) => {
+      if (conversationId) {
+        navigate({ to: "/meldinger/$id", params: { id: conversationId } });
+      }
+    },
+    onError: () => showErrorToast("Kunne ikke åpne samtalen. Prøv igjen."),
+  });
+
+  const replayedContact = useRef(false);
+  useEffect(() => {
+    if (!user || !data || replayedContact.current) return;
+    if (!takePendingAuthIntent({ type: "contact", listingId: data.id })) return;
+    replayedContact.current = true;
+    contactMutation.mutate();
+  }, [contactMutation, data, user]);
+
+  const images = useMemo(
+    () => (data?.listing_images ?? []).slice().sort((a, b) => a.sort_order - b.sort_order),
+    [data?.listing_images],
+  );
+
+  const imgUrls = useMemo(() => signListingImageUrls(images.map((i) => i.storage_path)), [images]);
+
+  const spin360Frames = useMemo(
+    () => (data?.listing_360_frames ?? []).slice().sort((a, b) => a.frame_order - b.frame_order),
+    [data?.listing_360_frames],
+  );
+
+  const spin360ImgUrls = useMemo(
+    () => signSpin360FrameUrls(spin360Frames.map((f) => f.storage_path)),
+    [spin360Frames],
+  );
+
+  useEffect(() => {
+    if (!data?.id || user?.id === data.seller_id) return;
+    void logView({ data: { listingId: data.id } }).catch((error: unknown) => {
+      console.warn("[listing_views] log failed", describeSafeError(error));
+    });
+  }, [data?.id, data?.seller_id, logView, user?.id]);
+
+  // Et nytt forsøk etter feil holder queryen i feilstatus (isLoading er
+  // false); vis lasting så «Prøv på nytt» gir respons.
+  if (isLoading || (!data && isFetching)) {
+    return (
+      <div className="mx-auto max-w-6xl px-4 py-8">
+        <div className="mt-4 grid gap-8 md:grid-cols-[1.4fr_1fr]">
+          <div>
+            <div className="aspect-[4/3] animate-pulse rounded-xl bg-muted" />
+            <div className="mt-8 space-y-3">
+              <div className="h-5 w-32 animate-pulse rounded bg-muted" />
+              <div className="h-4 w-full animate-pulse rounded bg-muted" />
+              <div className="h-4 w-5/6 animate-pulse rounded bg-muted" />
+            </div>
+          </div>
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <div className="h-4 w-24 animate-pulse rounded bg-muted" />
+              <div className="h-8 w-3/4 animate-pulse rounded bg-muted" />
+            </div>
+            <div className="h-24 animate-pulse rounded-xl bg-muted" />
+            <div className="h-40 animate-pulse rounded-xl bg-muted" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+  // Feil ved senere refetch beholder cachet annonse; bare uten data vises feilen.
+  if (!data) {
+    if (error instanceof ListingNotFoundError) return <RouteNotFound isListing />;
+    return error ? <ListingLoadError error={error} onRetry={() => void refetch()} /> : null;
+  }
+  const seller = data.seller;
+  const category = Array.isArray(data.categories) ? data.categories[0] : data.categories;
+  const attributes = (data.attributes ?? {}) as Record<string, unknown>;
+  const breadcrumb = (() => {
+    if (!category || !allCategories) return undefined;
+    const categoryChain = breadcrumbPath(category as Category, buildTree(allCategories));
+    // The listing's own (leaf) category, not the top-level root — brand/model
+    // (and the generic "brand" attribute) are defined as category_filters on
+    // the specific category (e.g. "Bil", not "Bil og MC"), so linking to the
+    // root would land on a search scope where those filter chips don't exist
+    // at all, silently dropping the very checkboxes this breadcrumb exists to
+    // offer.
+    const rootCategorySlug = categoryChain[categoryChain.length - 1]?.slug ?? null;
+    return [
+      ...categoryChain.map((c) => ({
+        name_nb: c.name_nb,
+        slug: c.slug as string | null,
+      })),
+      ...behavior
+        .extraBreadcrumbSegments(attributes, { rootCategorySlug, genericBrandFilter })
+        .map((s) => ({
+          name_nb: s.name_nb,
+          slug: s.slug,
+          attrs: s.attrs ? encodeAttrFilters(s.attrs) : undefined,
+        })),
+    ];
+  })();
+  const organizationBrand: ListingOrganizationBrand | undefined =
+    hasEffectiveOrganizationProff && organization
+      ? {
+          id: organization.id,
+          displayName: organization.display_name,
+          organizationNumber: organization.organization_number,
+          logoUrl: organizationLogoUrl(organization.logo_path),
+          websiteUrl: organization.website_url,
+          palette: organization.brand_palette,
+          concept: organization.listing_concept as ProffOrganizationPresentation["concept"],
+          font: organization.listing_font as ProffOrganizationPresentation["font"],
+          overtitle: organization.listing_overtitle as ProffOrganizationPresentation["overtitle"],
+        }
+      : undefined;
+  const relatedListingsSlot =
+    organizationBrand && !otherListingsError ? (
+      <ProffRelatedListings
+        organization={organizationBrand}
+        listings={otherOrganizationListings}
+        loading={otherListingsLoading}
+      />
+    ) : undefined;
+
+  return (
+    <ListingDetailView
+      title={data.title}
+      subtitle={data.subtitle}
+      description={data.description}
+      priceNok={data.price_nok}
+      isFree={data.is_free}
+      condition={data.condition}
+      city={data.city}
+      postalCode={data.postal_code}
+      displayLat={data.visitingLocation?.lat ?? data.display_lat}
+      displayLng={data.visitingLocation?.lng ?? data.display_lng}
+      exactLocationLabel={
+        data.visitingLocation && seller?.kind === "business" ? seller.visitingAddress : null
+      }
+      createdAt={data.created_at}
+      updatedAt={data.updated_at}
+      publishedAt={data.published_at}
+      knownIssues={data.known_issues}
+      noKnownIssues={data.no_known_issues}
+      maintenanceHistory={data.maintenance_history}
+      category={category ?? null}
+      categoryId={data.category_id}
+      canShip={data.can_ship}
+      requiresDeliveryMethod={behavior.requiresDeliveryMethod}
+      listingStatus={data.status}
+      reservedUntil={listingReservedUntil(data)}
+      relatedListingsSlot={relatedListingsSlot}
+      breadcrumb={breadcrumb}
+      enableBackToSearch
+      images={images}
+      imgUrls={imgUrls}
+      spin360Frames={spin360Frames}
+      spin360ImgUrls={spin360ImgUrls}
+      attributes={attributes}
+      editMode={isOwner && editContext ? { context: editContext } : undefined}
+      actionsMenuSlot={
+        user ? (
+          <ListingActionsMenu
+            listingId={data.id}
+            listingTitle={data.title}
+            sellerId={data.seller_id}
+            isAdminOrModerator={!!(isAdmin || isModerator)}
+            isOwner={isOwner}
+            listingStatus={data.status}
+          />
+        ) : undefined
+      }
+      ownerStatsSlot={
+        isOwner ? (
+          <>
+            <OwnerStatsPanel
+              listingId={data.id}
+              status={data.status}
+              stats={stats}
+              activePromotion={activePromotion}
+              promoteOpen={promoteOpen}
+              onPromoteOpenChange={setPromoteOpen}
+              statsInfoOpen={statsInfoOpen}
+              onStatsInfoOpenChange={setStatsInfoOpen}
+              editMode={editModeOn}
+              onToggleEditMode={toggleEditMode}
+              hasImages={images.length > 0}
+              isFree={data.is_free}
+              hasPrice={data.price_nok != null}
+            />
+            {Spin360CaptureLauncher && isNative && valueGroup && listingId && (
+              <div className="mt-3">
+                <Suspense fallback={null}>
+                  <Spin360CaptureLauncher
+                    listingId={listingId}
+                    listingTitle={data.title}
+                    label="Legg til 360°-opptak"
+                  />
+                </Suspense>
+              </div>
+            )}
+          </>
+        ) : undefined
+      }
+      sellerContactSlot={
+        <SellerContactPanel
+          isLoggedIn={!!user}
+          seller={seller ?? null}
+          isOwner={isOwner}
+          isSold={data.status === "sold"}
+          sellerId={data.seller_id}
+          listingId={data.id}
+          kaupetCode={data.kaupet_code}
+          title={data.title}
+          onContact={() => contactMutation.mutate()}
+          contacting={contactMutation.isPending}
+          shareOpen={shareOpen}
+          onShareOpenChange={handleShareOpenChange}
+          isNative={isNative}
+          organizationBrand={organizationBrand}
+        />
+      }
+      stickyContactSlot={
+        !isOwner && data.status !== "sold" ? (
+          <Button
+            size="native"
+            className="flex-1 gap-2 sm:flex-none"
+            onClick={() => contactMutation.mutate()}
+            disabled={contactMutation.isPending}
+          >
+            <MessageCircle className="size-4" />
+            {/* Også for gjester — contactMutation sender dem til innlogging. */}
+            {contactMutation.isPending ? "Åpner…" : "Send melding"}
+          </Button>
+        ) : undefined
+      }
+    >
+      {isOwner && listingId && (
+        <>
+          {PlateEditDialog && (
+            <Suspense fallback={null}>
+              <PlateEditDialog
+                open={plateModalOpen}
+                onOpenChange={setPlateModalOpen}
+                listingId={listingId}
+                kaupetCode={kaupetCode}
+                currentCategoryId={data.category_id}
+                attributes={attributes}
+              />
+            </Suspense>
+          )}
+          <CategoryChangeDialog
+            open={categoryModalOpen}
+            onOpenChange={setCategoryModalOpen}
+            listingId={listingId}
+            kaupetCode={kaupetCode}
+            currentCategoryId={data.category_id}
+          />
+        </>
+      )}
+    </ListingDetailView>
+  );
+}

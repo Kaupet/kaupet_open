@@ -1,0 +1,195 @@
+import { useEffect, useState } from "react";
+import { Check, Copy, Download, Loader2, Share2 } from "lucide-react";
+import { showSuccessToast, showErrorToast } from "@/lib/toast";
+import { shareContent } from "@/lib/native";
+import { QR_SIZE, generateBrandedQrDataUrl } from "@/lib/qr";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ResponsiveOverlay, ResponsiveOverlayContent } from "@/components/ui/responsive-overlay";
+import { SITE_SHORT_NAME, SITE_URL } from "@/lib/site";
+import { LISTING_CODE_AVAILABLE } from "@/components/listing-code-availability";
+
+/** Navnet på koden følger nettstedet (SITE_SHORT_NAME). */
+const CODE_LABEL = `${SITE_SHORT_NAME}-kode`;
+
+type Props = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  kaupetCode: string;
+  title: string;
+  isNative?: boolean;
+};
+
+export function ShareListingDialog({ open, onOpenChange, kaupetCode, title, isNative }: Props) {
+  const [codeCopied, setCodeCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [qr, setQr] = useState<{ url: string; src: string | null; error: string | null } | null>(
+    null,
+  );
+  const url = `${SITE_URL}/${kaupetCode}`;
+
+  // Åpning nullstiller resultatet, så en gjenåpning viser spinner og genererer
+  // på nytt; ved lukking står QR-en til animasjonen er ferdig (som før).
+  // Resultat for en annen url regnes som ingen.
+  const [prevOpen, setPrevOpen] = useState(open);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    if (open) setQr(null);
+  }
+  const current = qr?.url === url ? qr : null;
+  const qrSrc = current?.src ?? null;
+  const qrError = current?.error ?? null;
+  const generating = open && current === null;
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    generateBrandedQrDataUrl(url)
+      .then((dataUrl) => {
+        if (cancelled) return;
+        setQr({ url, src: dataUrl, error: null });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("QR generation failed", err);
+        setQr({ url, src: null, error: "Kunne ikke generere QR-kode" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, url]);
+
+  async function copy(text: string, kind: "code" | "link") {
+    try {
+      await navigator.clipboard.writeText(text);
+      if (kind === "code") {
+        setCodeCopied(true);
+        setTimeout(() => setCodeCopied(false), 1500);
+        showSuccessToast(`${CODE_LABEL} kopiert`);
+      } else {
+        setLinkCopied(true);
+        setTimeout(() => setLinkCopied(false), 1500);
+        showSuccessToast("Lenke kopiert");
+      }
+    } catch {
+      showErrorToast("Kunne ikke kopiere");
+    }
+  }
+
+  function downloadQr() {
+    if (!qrSrc) return;
+    const a = document.createElement("a");
+    a.href = qrSrc;
+    a.download = `${SITE_SHORT_NAME.toLowerCase()}-${kaupetCode}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  return (
+    <ResponsiveOverlay open={open} onOpenChange={onOpenChange}>
+      <ResponsiveOverlayContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Del annonse</DialogTitle>
+          <DialogDescription>
+            {LISTING_CODE_AVAILABLE
+              ? `Del annonsen med ${CODE_LABEL}, lenke eller QR-kode.`
+              : "Del annonsen med lenke eller QR-kode."}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* QR */}
+          <div className="flex flex-col items-center gap-3 rounded-xl border border-border bg-card p-4">
+            <div
+              className="flex h-56 w-56 items-center justify-center rounded-md bg-white"
+              aria-live="polite"
+            >
+              {generating && <Loader2 className="size-6 animate-spin text-muted-foreground" />}
+              {!generating && qrError && (
+                <span className="px-3 text-center text-sm text-destructive">{qrError}</span>
+              )}
+              {!generating && qrSrc && (
+                <img
+                  src={qrSrc}
+                  alt="QR-kode til annonsen"
+                  width={QR_SIZE}
+                  height={QR_SIZE}
+                  className="h-56 w-56 rounded-md"
+                />
+              )}
+            </div>
+            {!isNative && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={downloadQr}
+                disabled={!qrSrc}
+                className="gap-2"
+              >
+                <Download className="size-4" /> Last ned QR-kode
+              </Button>
+            )}
+          </div>
+
+          {LISTING_CODE_AVAILABLE && (
+            <div className="space-y-1.5">
+              <Label>{CODE_LABEL}</Label>
+              <div className="flex gap-2">
+                <div className="flex-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-center font-mono text-lg tracking-[0.3em]">
+                  {kaupetCode}
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => copy(kaupetCode, "code")}
+                  aria-label={`Kopier ${CODE_LABEL}`}
+                >
+                  {codeCopied ? <Check className="size-4" /> : <Copy className="size-4" />}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* URL */}
+          <div className="space-y-1.5">
+            <Label htmlFor="share-url">Lenke</Label>
+            <div className="flex gap-2">
+              <Input id="share-url" value={url} readOnly className="font-mono text-sm" />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => copy(url, "link")}
+                aria-label="Kopier lenke"
+              >
+                {linkCopied ? <Check className="size-4" /> : <Copy className="size-4" />}
+              </Button>
+            </div>
+          </div>
+
+          {/* Native share */}
+          {isNative && (
+            <Button
+              type="button"
+              className="w-full gap-2"
+              onClick={async () => {
+                try {
+                  await shareContent({ title, url });
+                } catch {
+                  // Bruker avbrutt deling
+                }
+              }}
+            >
+              <Share2 className="size-4" /> Del med kontakter
+            </Button>
+          )}
+        </div>
+      </ResponsiveOverlayContent>
+    </ResponsiveOverlay>
+  );
+}

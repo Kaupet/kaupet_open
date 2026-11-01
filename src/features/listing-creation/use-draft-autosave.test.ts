@@ -1,0 +1,1362 @@
+// @vitest-environment jsdom
+import { EDITION } from "@/lib/edition";
+import { useState } from "react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PendingImage } from "@/components/image-uploader";
+import { useDraftAutosave } from "./use-draft-autosave";
+
+vi.mock("@/integrations/supabase/client", () => ({
+  supabase: {
+    auth: { onAuthStateChange: () => ({ data: { subscription: { unsubscribe: vi.fn() } } }) },
+  },
+}));
+
+vi.mock("@/lib/toast", () => ({
+  showSuccessToast: vi.fn(),
+}));
+
+const saveDraftListingMock = vi.fn();
+const discardDraftListingMock = vi.fn();
+const syncDraftListingImagesMock = vi.fn();
+vi.mock("@/lib/listings.functions", () => ({
+  saveDraftListing: (...args: unknown[]) => saveDraftListingMock(...args),
+  discardDraftListing: (...args: unknown[]) => discardDraftListingMock(...args),
+  syncDraftListingImages: (...args: unknown[]) => syncDraftListingImagesMock(...args),
+}));
+
+const uploadListingImageMock = vi.fn();
+vi.mock("@/lib/storage", () => ({
+  uploadListingImage: (...args: unknown[]) => uploadListingImageMock(...args),
+  uploadListingImageThumb: vi.fn().mockResolvedValue(undefined),
+}));
+
+const loadDraftImagesMock = vi.fn().mockResolvedValue([]);
+const saveDraftImagesMock = vi.fn().mockResolvedValue(undefined);
+const clearDraftImagesMock = vi.fn().mockResolvedValue(undefined);
+const transferDraftImagesMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("./draft-image-store", () => ({
+  loadDraftImages: (...args: unknown[]) => loadDraftImagesMock(...args),
+  saveDraftImages: (...args: unknown[]) => saveDraftImagesMock(...args),
+  clearDraftImages: (...args: unknown[]) => clearDraftImagesMock(...args),
+  transferDraftImages: (...args: unknown[]) => transferDraftImagesMock(...args),
+}));
+
+const DRAFT_KEY = "kaupet_draft_sell_listing:user-1:private";
+const DRAFT_ID_KEY = "kaupet_draft_sell_listing_id:user-1:private";
+const DRAFT_UPDATED_AT_KEY = "kaupet_draft_sell_listing_updated_at:user-1:private";
+
+const baseFields = {
+  title: "",
+  subtitle: "",
+  description: "",
+  selectedParentId: "",
+  categoryId: "",
+  condition: null,
+  isFree: false,
+  canShip: null,
+  priceNok: "",
+  postalCode: "",
+  city: "",
+  organizationLocationId: "00000000-0000-4000-8000-000000000001",
+  coords: null,
+  derivedTitle: false,
+  attributes: {},
+  images: [],
+  setImages: vi.fn(),
+  stepKey: "title-photos",
+  authenticated: true,
+  userId: "user-1" as string | null,
+  organizationId: null as string | null,
+};
+
+beforeEach(() => {
+  localStorage.clear();
+  saveDraftListingMock.mockReset();
+  discardDraftListingMock.mockReset();
+  syncDraftListingImagesMock.mockReset().mockResolvedValue({ already_published: false });
+  uploadListingImageMock
+    .mockReset()
+    .mockImplementation(async ({ listingId }: { listingId: string }) => `${listingId}/bilde.webp`);
+  loadDraftImagesMock.mockReset().mockResolvedValue([]);
+  saveDraftImagesMock.mockReset().mockResolvedValue(undefined);
+  transferDraftImagesMock.mockReset().mockResolvedValue(undefined);
+  clearDraftImagesMock.mockClear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("useDraftAutosave", () => {
+  it.each(["konto", "medlemskap"])(
+    "avviser et pågående lagringssvar etter endret %s",
+    async (change) => {
+      let resolveSave!: (value: unknown) => void;
+      saveDraftListingMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveSave = resolve;
+        }),
+      );
+      const fields = { ...baseFields, title: "Utkast før aktørendring" };
+      const { result, rerender } = renderHook((value) => useDraftAutosave(value), {
+        initialProps: fields,
+      });
+      let save!: Promise<string | null>;
+      act(() => {
+        save = result.current.saveDraftToSupabase();
+      });
+      rerender({
+        ...fields,
+        ...(change === "konto" ? { userId: "user-2" } : { organizationId: "new-organization" }),
+      });
+      await act(async () => {
+        resolveSave({ id: "old-actor-draft", updated_at: "2026-10-09T10:00:00Z" });
+        expect(await save).toBeNull();
+      });
+      expect(result.current.actorChanged).toBe(true);
+      expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+      expect(localStorage.getItem("kaupet_draft_sell_listing_id:user-2:private")).toBeNull();
+      expect(
+        localStorage.getItem("kaupet_draft_sell_listing_id:user-1:new-organization"),
+      ).toBeNull();
+    },
+  );
+
+  it("DEF-DRAFT-01: avviser kontobytte uten å skrive hos den nye brukeren", async () => {
+    const { result, rerender } = renderHook((fields) => useDraftAutosave(fields), {
+      initialProps: { ...baseFields, title: "Bedriftens sykkel" },
+    });
+    rerender({ ...baseFields, title: "Bedriftens sykkel", userId: "user-2" });
+    await act(async () => {
+      expect(await result.current.flushLocalDraft()).toBe(false);
+      expect(await result.current.saveDraftToSupabase()).toBeNull();
+    });
+    expect(result.current.actorChanged).toBe(true);
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+    expect(localStorage.getItem("kaupet_draft_sell_listing:user-2:private")).toBeNull();
+  });
+
+  it("DEF-DRAFT-02: publisering bruker lagret ID og hindrer videre autolagring", async () => {
+    saveDraftListingMock.mockResolvedValue({
+      id: "draft-publish",
+      updated_at: "2026-10-09T10:00:00Z",
+    });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Sykkel til salgs" }),
+    );
+    await act(async () => {
+      expect(await result.current.preparePublish()).toEqual({
+        id: "draft-publish",
+        published: false,
+      });
+      expect(await result.current.saveDraftToSupabase()).toBeNull();
+    });
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(1);
+    expect(saveDraftListingMock.mock.calls[0][0].data.expected_user_id).toBe("user-1");
+  });
+
+  it("DEF-DRAFT-02: gjenoppretting beholder server-ID mens bildelageret leses", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Lagret salgsutkast", saved_at: Date.now() }),
+    );
+    localStorage.setItem(DRAFT_ID_KEY, "existing-draft");
+    let resolveImages!: (images: never[]) => void;
+    const pendingImages = new Promise<never[]>((resolve) => {
+      resolveImages = resolve;
+    });
+    loadDraftImagesMock.mockReturnValue(pendingImages);
+    saveDraftListingMock.mockResolvedValue({
+      id: "existing-draft",
+      updated_at: "2026-10-09T10:00:00Z",
+    });
+    const { result } = renderHook(() => {
+      const [title, setTitle] = useState("");
+      const draft = useDraftAutosave({ ...baseFields, title, isFree: true });
+      return { draft, setTitle };
+    });
+    let restore!: Promise<void>;
+    act(() => {
+      restore = result.current.draft.restoreDraft({
+        setValue: (key, value) => {
+          if (key === "title") result.current.setTitle(String(value));
+        },
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      });
+    });
+    expect(result.current.draft.draftId).toBe("existing-draft");
+    await act(async () => {
+      resolveImages([]);
+      await restore;
+    });
+    await act(async () => {
+      expect(await result.current.draft.preparePublish()).toEqual({
+        id: "existing-draft",
+        published: false,
+      });
+    });
+    expect(saveDraftListingMock.mock.calls[0][0].data).toMatchObject({
+      id: "existing-draft",
+      is_free: true,
+    });
+  });
+
+  it("publiseringsforberedelse bevarer godkjenningsfeilen fra lagring", async () => {
+    const message = "Bedriften må være godkjent før du kan publisere annonser.";
+    saveDraftListingMock.mockRejectedValue(new Error(message));
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Bedriftens sykkel" }),
+    );
+    await act(async () => {
+      await expect(result.current.preparePublish()).rejects.toThrow(message);
+    });
+  });
+
+  it("DEF-SAVE-01: bevarer lokal kopi og den faktiske rategrensefeilen", async () => {
+    saveDraftListingMock.mockRejectedValue(new Error("For mange lagringer. Prøv igjen senere."));
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Sykkel til salgs" }),
+    );
+    await act(async () => {
+      await result.current.saveDraftToSupabase();
+    });
+    expect(result.current.draftSaveMessage).toBe("For mange lagringer. Prøv igjen senere.");
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!).title).toBe("Sykkel til salgs");
+  });
+
+  it("sier fra når utkastet allerede er publisert i stedet for å late som det er lagret", async () => {
+    saveDraftListingMock.mockResolvedValue({
+      id: "draft-1",
+      kaupet_code: "ABC123",
+      updated_at: "2026-10-09T10:00:00Z",
+      published: true,
+    });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Sykkel til salgs" }),
+    );
+    let id: string | null = null;
+    await act(async () => {
+      id = await result.current.saveDraftToSupabase();
+    });
+    expect(id).toBeNull();
+    expect(result.current.draftSaveError).toBe(true);
+    expect(result.current.draftSaveMessage).toContain("allerede publisert");
+  });
+
+  it("kontrollerer publisert status før retry selv når feltene er uendret", async () => {
+    saveDraftListingMock.mockResolvedValueOnce({
+      id: "draft-1",
+      updated_at: "2026-10-09T10:00:00Z",
+    });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Sykkel til salgs" }),
+    );
+    await act(async () => {
+      await result.current.saveDraftToSupabase();
+    });
+    saveDraftListingMock.mockResolvedValue({
+      id: "draft-1",
+      kaupet_code: "ABC123",
+      published: true,
+    });
+    await act(async () => {
+      expect(await result.current.preparePublish()).toEqual({
+        id: "draft-1",
+        kaupet_code: "ABC123",
+        published: true,
+      });
+    });
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads a recent draft from localStorage on mount and exposes it as hasDraftData", () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Sykkel til salgs", saved_at: Date.now() }),
+    );
+    localStorage.setItem(DRAFT_ID_KEY, "draft-123");
+
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    expect(result.current.hasDraftData).toEqual(
+      expect.objectContaining({ title: "Sykkel til salgs" }),
+    );
+    expect(result.current.draftId).toBe("draft-123");
+  });
+
+  it("laster opp bilder til serverutkastet én gang og gjenbruker dem ved neste lagring", async () => {
+    saveDraftListingMock.mockResolvedValue({ id: "draft-1", updated_at: "2026-10-13T10:00:00Z" });
+    const file = new File(["x"], "a.webp", { type: "image/webp" });
+    const { result } = renderHook(() => {
+      const [images, setImages] = useState<PendingImage[]>([
+        { id: "img-1", file, thumbFile: file, previewUrl: "blob:a", caption: " Front " },
+      ]);
+      return useDraftAutosave({ ...baseFields, title: "Sykkel til salgs", images, setImages });
+    });
+    await waitFor(() => expect(result.current.draftChecked).toBe(true));
+
+    await act(async () => {
+      expect(await result.current.saveDraftWithImages()).toBe("draft-1");
+    });
+    expect(uploadListingImageMock).toHaveBeenCalledOnce();
+    expect(syncDraftListingImagesMock).toHaveBeenCalledWith({
+      data: {
+        expected_user_id: "user-1",
+        draftId: "draft-1",
+        images: [
+          {
+            id: expect.any(String),
+            storage_path: "draft-1/bilde.webp",
+            sort_order: 0,
+            caption: "Front",
+            ai_generated: false,
+          },
+        ],
+      },
+    });
+
+    await act(async () => {
+      expect(await result.current.saveDraftWithImages()).toBe("draft-1");
+    });
+    expect(uploadListingImageMock).toHaveBeenCalledOnce();
+    expect(syncDraftListingImagesMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])(
+    "synker bildeendringer etter uendrede lagringer (har bilder: %s)",
+    async (hasImages) => {
+      saveDraftListingMock.mockResolvedValue({ id: "draft-1", updated_at: "2026-10-13T10:00:00Z" });
+      const file = new File(["x"], "a.webp", { type: "image/webp" });
+      const image: PendingImage = { id: "img-a", file, thumbFile: file, previewUrl: "blob:a" };
+      const { result } = renderHook(() => {
+        const [images, setImages] = useState<PendingImage[]>(hasImages ? [image] : []);
+        return {
+          setImages,
+          draft: useDraftAutosave({ ...baseFields, title: "Sykkel til salgs", images, setImages }),
+        };
+      });
+      await waitFor(() => expect(result.current.draft.draftChecked).toBe(true));
+      await act(async () => {
+        await result.current.draft.saveDraftWithImages();
+      });
+      await act(async () => {
+        await result.current.draft.saveDraftWithImages();
+      });
+      act(() => result.current.setImages(hasImages ? [] : [image]));
+      await act(async () => {
+        expect(await result.current.draft.saveDraftWithImages()).toBe("draft-1");
+      });
+      expect(syncDraftListingImagesMock.mock.calls.at(-1)?.[0].data.images).toHaveLength(
+        hasImages ? 0 : 1,
+      );
+    },
+  );
+
+  it.each(["legger til", "fjerner", "endrer bildetekst"])(
+    "lagrer nyeste bildeliste ved avslutning når brukeren %s under opplasting",
+    async (change) => {
+      saveDraftListingMock.mockResolvedValue({ id: "draft-1", updated_at: "2026-10-13T10:00:00Z" });
+      let finishUpload!: (path: string) => void;
+      uploadListingImageMock.mockReturnValueOnce(
+        new Promise<string>((resolve) => {
+          finishUpload = resolve;
+        }),
+      );
+      const file = new File(["x"], "a.webp", { type: "image/webp" });
+      const image: PendingImage = { id: "img-a", file, thumbFile: file, previewUrl: "blob:a" };
+      const { result } = renderHook(() => {
+        const [images, setImages] = useState<PendingImage[]>([image]);
+        return {
+          setImages,
+          draft: useDraftAutosave({ ...baseFields, title: "Sykkel til salgs", images, setImages }),
+        };
+      });
+      await waitFor(() => expect(result.current.draft.draftChecked).toBe(true));
+      let background!: Promise<string | null>;
+      act(() => {
+        background = result.current.draft.saveDraftWithImages();
+      });
+      await waitFor(() => expect(uploadListingImageMock).toHaveBeenCalledOnce());
+      act(() =>
+        result.current.setImages(
+          change === "fjerner"
+            ? []
+            : change === "legger til"
+              ? [image, { ...image, id: "img-b" }]
+              : [{ ...image, caption: "Blå sykkel æøå 🚲" }],
+        ),
+      );
+      let saveOnExit!: Promise<string | null>;
+      act(() => {
+        saveOnExit = result.current.draft.saveDraftWithImages();
+      });
+      await act(async () => {
+        finishUpload("draft-1/a.webp");
+        await background;
+        expect(await saveOnExit).toBe("draft-1");
+      });
+      const savedImages = syncDraftListingImagesMock.mock.calls.at(-1)?.[0].data.images;
+      expect(savedImages).toHaveLength(change === "fjerner" ? 0 : change === "legger til" ? 2 : 1);
+      if (change !== "fjerner") {
+        expect(savedImages[0].id).toBe(
+          syncDraftListingImagesMock.mock.calls[0][0].data.images[0].id,
+        );
+      }
+      if (change === "endrer bildetekst") expect(savedImages[0].caption).toBe("Blå sykkel æøå 🚲");
+    },
+  );
+
+  it("beholder bildene lokalt og melder feil når bildesynken feiler", async () => {
+    saveDraftListingMock.mockResolvedValue({ id: "draft-1", updated_at: "2026-10-13T10:00:00Z" });
+    syncDraftListingImagesMock.mockRejectedValue(new Error("nede"));
+    const file = new File(["x"], "a.webp", { type: "image/webp" });
+    const { result } = renderHook(() => {
+      const [images, setImages] = useState<PendingImage[]>([
+        { id: "img-1", file, thumbFile: file, previewUrl: "blob:a" },
+      ]);
+      return {
+        images,
+        draft: useDraftAutosave({ ...baseFields, title: "Sykkel til salgs", images, setImages }),
+      };
+    });
+    await waitFor(() => expect(result.current.draft.draftChecked).toBe(true));
+
+    await act(async () => {
+      expect(await result.current.draft.saveDraftWithImages()).toBeNull();
+    });
+    expect(result.current.draft.draftSaveError).toBe(true);
+    // Opplastingen er husket, så neste forsøk laster ikke opp på nytt.
+    expect(result.current.images[0].remote).toMatchObject({
+      path: "draft-1/bilde.webp",
+      synced: false,
+    });
+  });
+
+  it("fjerner lagringsfeilen når bildesynken lykkes etter nettverksfeil", async () => {
+    saveDraftListingMock.mockResolvedValue({ id: "draft-1", updated_at: "2026-10-13T10:00:00Z" });
+    syncDraftListingImagesMock.mockRejectedValueOnce(new Error("Nettverket er nede"));
+    const file = new File(["x"], "a.webp", { type: "image/webp" });
+    const { result } = renderHook(() => {
+      const [images, setImages] = useState<PendingImage[]>([
+        { id: "img-1", file, thumbFile: file, previewUrl: "blob:a" },
+      ]);
+      return useDraftAutosave({ ...baseFields, title: "Sykkel til salgs", images, setImages });
+    });
+    await waitFor(() => expect(result.current.draftChecked).toBe(true));
+
+    await act(async () => {
+      expect(await result.current.saveDraftWithImages()).toBeNull();
+    });
+    expect(result.current.draftSaveError).toBe(true);
+    expect(result.current.draftSaveMessage).toBeTruthy();
+
+    await act(async () => {
+      expect(await result.current.saveDraftWithImages()).toBe("draft-1");
+    });
+    expect(result.current.draftSaveError).toBe(false);
+    expect(result.current.draftSaveMessage).toBeNull();
+  });
+
+  it("går videre uten svar forkaster lokalt utkast, men ikke serverutkastet", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Sykkel til salgs", saved_at: Date.now() }),
+    );
+    localStorage.setItem(DRAFT_ID_KEY, "draft-123");
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    act(() => result.current.releaseDraftOffer());
+
+    expect(result.current.hasDraftData).toBeNull();
+    expect(result.current.draftId).toBeNull();
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+    expect(clearDraftImagesMock).toHaveBeenCalledWith(DRAFT_KEY);
+    expect(discardDraftListingMock).not.toHaveBeenCalled();
+  });
+
+  it("DEF-DRAFT-01: overtar ikke eldre globale utkast uten kjent eier, men rydder dem bort", () => {
+    localStorage.setItem(
+      "kaupet_draft_ny_annonse",
+      JSON.stringify({ title: "En annen kontos utkast", saved_at: Date.now() }),
+    );
+    localStorage.setItem("kaupet_draft_id", "legacy-id");
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+    expect(result.current.hasDraftData).toBeNull();
+    expect(result.current.draftId).toBeNull();
+    expect(localStorage.getItem("kaupet_draft_id")).toBeNull();
+    expect(localStorage.getItem("kaupet_draft_ny_annonse")).toBeNull();
+  });
+
+  it("discards a draft older than 7 days instead of surfacing it", () => {
+    const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Gammelt utkast", saved_at: eightDaysAgo }),
+    );
+
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    expect(result.current.hasDraftData).toBeNull();
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+  });
+
+  it("does not surface a draft with no title or description", () => {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ saved_at: Date.now() }));
+
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    expect(result.current.hasDraftData).toBeNull();
+  });
+
+  it("flushes guest drafts locally without calling Supabase", async () => {
+    const { result } = renderHook(() =>
+      useDraftAutosave({
+        ...baseFields,
+        authenticated: false,
+        userId: null,
+        title: "En fin sykkel",
+      }),
+    );
+
+    await act(async () => {
+      expect(await result.current.flushLocalDraft()).toBe(true);
+      expect(await result.current.saveDraftToSupabase()).toBeNull();
+    });
+
+    expect(
+      JSON.parse(localStorage.getItem("kaupet_draft_sell_listing:guest:private") ?? "{}"),
+    ).toMatchObject({
+      title: "En fin sykkel",
+      draft_version: 1,
+    });
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+  });
+  it("venter på bildeoverføringen før gjesteutkastet gjenopprettes", async () => {
+    const guestKey = "kaupet_draft_sell_listing:guest:private";
+    const savedAt = Date.now();
+    const targetKey = `${DRAFT_KEY}:handoff:${savedAt}`;
+    const image = { id: "guest-image" };
+    let commit!: () => void;
+    let transferred = false;
+    transferDraftImagesMock.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          commit = () => {
+            transferred = true;
+            resolve();
+          };
+        }),
+    );
+    loadDraftImagesMock.mockImplementation((key: string) =>
+      Promise.resolve(key === targetKey && transferred ? [image] : []),
+    );
+    localStorage.setItem(
+      guestKey,
+      JSON.stringify({ title: "Gjestens sykkel", saved_at: savedAt, image_count: 1 }),
+    );
+    const setImages = vi.fn();
+    const { result, unmount } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, resumeGuest: true, setImages }),
+    );
+    let restored = false;
+    let restore!: Promise<void>;
+    await act(async () => {
+      restore = result.current
+        .restoreDraft({
+          setValue: vi.fn(),
+          setSelectedParentId: vi.fn(),
+          setLocationMethod: vi.fn(),
+          setAttributes: vi.fn(),
+          setCoords: vi.fn(),
+        })
+        .then(() => {
+          restored = true;
+        });
+      await Promise.resolve();
+    });
+    expect(restored).toBe(false);
+    expect(localStorage.getItem(guestKey)).not.toBeNull();
+    await act(async () => {
+      commit();
+      await restore;
+    });
+    expect(setImages).toHaveBeenCalledWith([image]);
+    expect(localStorage.getItem(guestKey)).toBeNull();
+    expect(result.current.hasDraftData).toBeNull();
+    unmount();
+  });
+
+  it("gjenoppretter et gjesteutkast uten bilder når bildelagring ikke er tilgjengelig", async () => {
+    const guestKey = "kaupet_draft_sell_listing:guest:private";
+    localStorage.setItem(
+      guestKey,
+      JSON.stringify({ title: "Gjestens sykkel", saved_at: Date.now(), image_count: 0 }),
+    );
+    transferDraftImagesMock.mockRejectedValue(new Error("IndexedDB unavailable"));
+    const { result, unmount } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, resumeGuest: true }),
+    );
+    await act(async () => {
+      await result.current.restoreDraft({
+        setValue: vi.fn(),
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      });
+    });
+    expect(result.current.hasDraftData).toBeNull();
+    expect(result.current.draftSaveError).toBe(false);
+    expect(localStorage.getItem(guestKey)).toBeNull();
+    unmount();
+  });
+
+  it.each([false, true])(
+    "beholder gjestebildene etter feil og gjenopptar overføringen, reload=%s",
+    async (reload) => {
+      const guestKey = "kaupet_draft_sell_listing:guest:private";
+      const savedAt = Date.now();
+      const targetKey = `${DRAFT_KEY}:handoff:${savedAt}`;
+      const image = { id: "guest-image" };
+      let transferred = false;
+      transferDraftImagesMock.mockRejectedValueOnce(new Error("QuotaExceededError"));
+      transferDraftImagesMock.mockImplementation(() => {
+        transferred = true;
+        return Promise.resolve();
+      });
+      loadDraftImagesMock.mockImplementation((key: string) =>
+        Promise.resolve(key === targetKey && transferred ? [image] : []),
+      );
+      localStorage.setItem(
+        guestKey,
+        JSON.stringify({ title: "Gjestens sykkel", saved_at: savedAt, image_count: 1 }),
+      );
+      const setImages = vi.fn();
+      let hook = renderHook(() =>
+        useDraftAutosave({ ...baseFields, resumeGuest: true, setImages }),
+      );
+      await waitFor(() => expect(hook.result.current.draftSaveError).toBe(true));
+      expect(hook.result.current.hasDraftData?.image_count).toBe(1);
+      expect(localStorage.getItem(guestKey)).not.toBeNull();
+      if (reload) {
+        hook.unmount();
+        hook = renderHook(() => useDraftAutosave({ ...baseFields, setImages }));
+      }
+      await act(async () => {
+        await hook.result.current.restoreDraft({
+          setValue: vi.fn(),
+          setSelectedParentId: vi.fn(),
+          setLocationMethod: vi.fn(),
+          setAttributes: vi.fn(),
+          setCoords: vi.fn(),
+        });
+      });
+      expect(setImages).toHaveBeenCalledWith([image]);
+      expect(hook.result.current.draftSaveError).toBe(false);
+      expect(localStorage.getItem(guestKey)).toBeNull();
+      hook.unmount();
+    },
+  );
+
+  it("returnerer feil når bildedraft ikke kan flushes", async () => {
+    saveDraftImagesMock.mockRejectedValueOnce(new Error("IndexedDB unavailable"));
+    const { result } = renderHook(() =>
+      useDraftAutosave({
+        ...baseFields,
+        authenticated: false,
+        userId: null,
+        title: "En fin sykkel",
+      }),
+    );
+
+    await act(async () => {
+      expect(await result.current.flushLocalDraft()).toBe(false);
+    });
+    expect(result.current.draftSaveError).toBe(true);
+  });
+
+  it("saveDraftToSupabase refuses to save when the effective title is under 5 characters", async () => {
+    const { result } = renderHook(() => useDraftAutosave({ ...baseFields, title: "Hi" }));
+
+    const id = await act(() => result.current.saveDraftToSupabase());
+
+    expect(id).toBeNull();
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+  });
+
+  it("saveDraftToSupabase creates a new draft and remembers the returned id", async () => {
+    saveDraftListingMock.mockResolvedValue({
+      id: "new-draft-id",
+      kaupet_code: "ABC123",
+      updated_at: "2026-09-13T18:00:00.000Z",
+    });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel" }),
+    );
+
+    const id = await act(() => result.current.saveDraftToSupabase());
+
+    expect(id).toBe("new-draft-id");
+    expect(result.current.draftId).toBe("new-draft-id");
+    expect(result.current.draftSaveError).toBe(false);
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBe("new-draft-id");
+    expect(localStorage.getItem(DRAFT_UPDATED_AT_KEY)).toBe("2026-09-13T18:00:00.000Z");
+    expect(saveDraftListingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          title: "En fin sykkel",
+          can_ship: null,
+          // Bedriftslokasjon finnes ikke i kaupet_open; Open sender ingen eierfelt.
+          ...(EDITION === "open"
+            ? {}
+            : { organization_location_id: "00000000-0000-4000-8000-000000000001" }),
+        }),
+      }),
+    );
+    if (EDITION === "open") {
+      const sent = saveDraftListingMock.mock.calls[0][0].data;
+      expect(sent).not.toHaveProperty("organization_location_id");
+      expect(sent).not.toHaveProperty("expected_organization_id");
+    }
+  });
+
+  it("intervallet bruker siste leveringsmåte etter rerender", async () => {
+    vi.useFakeTimers();
+    saveDraftListingMock.mockResolvedValue({
+      id: "draft-id",
+      updated_at: "2026-09-15T10:00:00.000Z",
+    });
+    const initialFields = { ...baseFields, title: "En fin sykkel", canShip: null as string | null };
+    const { result, rerender } = renderHook((fields) => useDraftAutosave(fields), {
+      initialProps: initialFields,
+    });
+
+    rerender({ ...baseFields, title: "En fin sykkel", canShip: "ship" });
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+
+    expect(saveDraftListingMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ can_ship: true }) }),
+    );
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}").can_ship).toBe("ship");
+    expect(result.current.draftId).toBe("draft-id");
+  });
+
+  it("lagrer lokalt ved hidden uten å starte server-save", () => {
+    localStorage.setItem(DRAFT_ID_KEY, "draft-id");
+    localStorage.setItem(DRAFT_UPDATED_AT_KEY, "old-version");
+    renderHook(() => useDraftAutosave({ ...baseFields, title: "En fin sykkel", canShip: "ship" }));
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}")).toMatchObject({
+      title: "En fin sykkel",
+      can_ship: "ship",
+    });
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  });
+
+  it("overskriver ikke et lokalt utkast mens restore-kortet vises", async () => {
+    cleanup();
+    vi.useFakeTimers();
+    vi.clearAllTimers();
+    const oldDraft = {
+      title: "Gammelt utkast",
+      category_id: "old-category",
+      saved_at: Date.now(),
+    };
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(oldDraft));
+    localStorage.setItem(DRAFT_ID_KEY, "draft-id");
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.hasDraftData).not.toBeNull();
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(oldDraft));
+
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}")).toMatchObject(oldDraft);
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBe("draft-id");
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  });
+
+  it("flusher en endring innenfor debounce-vinduet til localStorage ved pagehide (F2)", () => {
+    vi.useFakeTimers();
+    const initialFields = { ...baseFields, title: "En fin sykkel", canShip: null as string | null };
+    const { rerender } = renderHook((fields) => useDraftAutosave(fields), {
+      initialProps: initialFields,
+    });
+
+    // Brukeren velger "Må hentes" og laster/lukker siden under to sekunder
+    // senere — før den debouncede localStorage-lagringen rekker å fyre.
+    act(() => {
+      rerender({ ...initialFields, canShip: "pickup" });
+      vi.advanceTimersByTime(500);
+    });
+    act(() => window.dispatchEvent(new Event("pagehide")));
+
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}").can_ship).toBe("pickup");
+  });
+
+  it("flusher en endring gjort etter en fullført gjenoppretting ved pagehide (J5)", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Gammelt utkast", saved_at: Date.now() }),
+    );
+    localStorage.setItem(DRAFT_ID_KEY, "draft-id");
+    const initialFields = { ...baseFields, canShip: null as string | null };
+    const { result, rerender } = renderHook((fields) => useDraftAutosave(fields), {
+      initialProps: initialFields,
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.hasDraftData).not.toBeNull();
+
+    await act(() =>
+      result.current.restoreDraft({
+        setValue: vi.fn(),
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      }),
+    );
+    expect(result.current.hasDraftData).toBeNull();
+
+    // Rett etter gjenoppretting endrer brukeren leveringsvalget og lukker
+    // appen (tvangsavslutt) før debounce-vinduet på to sekunder er ute.
+    act(() => {
+      rerender({ ...initialFields, canShip: "pickup" });
+      vi.advanceTimersByTime(500);
+    });
+    act(() => window.dispatchEvent(new Event("pagehide")));
+
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}").can_ship).toBe("pickup");
+  });
+
+  it("avviser foreldet tofanelagring og beholder endringene lokalt", async () => {
+    localStorage.setItem(DRAFT_ID_KEY, "00000000-0000-4000-8000-000000000001");
+    localStorage.setItem(DRAFT_UPDATED_AT_KEY, "2026-09-13T18:00:00.000Z");
+    saveDraftListingMock
+      .mockResolvedValueOnce({
+        conflict: true,
+        updated_at: "2026-09-13T18:01:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        id: "00000000-0000-4000-8000-000000000001",
+        kaupet_code: "ABC123",
+        updated_at: "2026-09-13T18:02:00.000Z",
+      });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Nyeste lokale versjon" }),
+    );
+
+    await waitFor(() => expect(result.current.draftId).not.toBeNull());
+    await act(() => result.current.saveDraftToSupabase());
+
+    expect(saveDraftListingMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          expected_updated_at: "2026-09-13T18:00:00.000Z",
+        }),
+      }),
+    );
+    expect(result.current.draftSaveConflict).toBe(true);
+    expect(localStorage.getItem(DRAFT_UPDATED_AT_KEY)).toBe("2026-09-13T18:01:00.000Z");
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}").title).toBe("Nyeste lokale versjon");
+
+    await act(() => result.current.saveDraftToSupabase());
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(1);
+
+    await act(() => result.current.retryDraftAfterConflict());
+    expect(saveDraftListingMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          expected_updated_at: "2026-09-13T18:01:00.000Z",
+        }),
+      }),
+    );
+    expect(result.current.draftSaveConflict).toBe(false);
+  });
+
+  it("venter på konfliktkallet før en umiddelbar retry lagrer på nytt", async () => {
+    localStorage.setItem(DRAFT_ID_KEY, "00000000-0000-4000-8000-000000000001");
+    localStorage.setItem(DRAFT_UPDATED_AT_KEY, "2026-09-13T18:00:00.000Z");
+    let resolveConflict!: (value: { conflict: true; updated_at: string }) => void;
+    const conflictResponse = new Promise<{ conflict: true; updated_at: string }>((resolve) => {
+      resolveConflict = resolve;
+    });
+    saveDraftListingMock.mockReturnValueOnce(conflictResponse).mockResolvedValueOnce({
+      id: "00000000-0000-4000-8000-000000000001",
+      kaupet_code: "ABC123",
+      updated_at: "2026-09-13T18:02:00.000Z",
+    });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Nyeste lokale versjon" }),
+    );
+    await waitFor(() => expect(result.current.draftId).not.toBeNull());
+
+    let firstSave!: Promise<string | null>;
+    let retry!: Promise<string | null>;
+    act(() => {
+      firstSave = result.current.saveDraftToSupabase();
+      retry = result.current.retryDraftAfterConflict();
+    });
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveConflict({ conflict: true, updated_at: "2026-09-13T18:01:00.000Z" });
+      await Promise.all([firstSave, retry]);
+    });
+
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(2);
+    expect(saveDraftListingMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          expected_updated_at: "2026-09-13T18:01:00.000Z",
+        }),
+      }),
+    );
+    expect(result.current.draftSaveConflict).toBe(false);
+    expect(result.current.draftSaveError).toBe(false);
+  });
+
+  it.each(["conflict", "success", "error"] as const)(
+    "beholder ny lokal leveringsmåte når en eldre server-save får %s",
+    async (outcome) => {
+      let resolveRequest!: (value: unknown) => void;
+      let rejectRequest!: (error: Error) => void;
+      const request = new Promise<unknown>((resolve, reject) => {
+        resolveRequest = resolve;
+        rejectRequest = reject;
+      });
+      saveDraftListingMock.mockReturnValueOnce(request);
+      const initialFields = {
+        ...baseFields,
+        title: "En fin sykkel",
+        canShip: null as string | null,
+      };
+      const { result, rerender } = renderHook((fields) => useDraftAutosave(fields), {
+        initialProps: initialFields,
+      });
+
+      let save!: Promise<string | null>;
+      act(() => {
+        save = result.current.saveDraftToSupabase();
+      });
+      rerender({ ...baseFields, title: "En fin sykkel", canShip: "ship" });
+      await act(async () => {
+        if (outcome === "conflict") {
+          resolveRequest({ conflict: true, updated_at: "2026-09-15T10:00:00.000Z" });
+        } else if (outcome === "success") {
+          resolveRequest({ id: "draft-id", updated_at: "2026-09-15T10:00:00.000Z" });
+        } else {
+          rejectRequest(new Error("network down"));
+        }
+        await save;
+      });
+
+      expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}").can_ship).toBe("ship");
+    },
+  );
+
+  it("saveDraftToSupabase sets draftSaveError when the save fails", async () => {
+    saveDraftListingMock.mockRejectedValue(new Error("network down"));
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel" }),
+    );
+
+    const id = await act(() => result.current.saveDraftToSupabase());
+
+    expect(id).toBeNull();
+    expect(result.current.draftSaveError).toBe(true);
+  });
+
+  it("ensureDraftId reuses an existing draftId instead of saving again", async () => {
+    localStorage.setItem(DRAFT_ID_KEY, "already-there");
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel" }),
+    );
+
+    // draftId hydrates from localStorage in an effect — wait for it.
+    await waitFor(() => expect(result.current.draftId).toBe("already-there"));
+
+    const id = await act(() => result.current.ensureDraftId());
+
+    expect(id).toBe("already-there");
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+  });
+
+  it("clearDraftStorage removes both localStorage keys", () => {
+    localStorage.setItem(DRAFT_KEY, "x");
+    localStorage.setItem(DRAFT_ID_KEY, "y");
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    act(() => result.current.clearDraftStorage());
+
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_UPDATED_AT_KEY)).toBeNull();
+  });
+
+  it("stops saving after clearDraftStorage({ stopAutosave: true }) so publishing leaves no duplicate draft", async () => {
+    saveDraftListingMock.mockResolvedValue({ id: "published-draft", kaupet_code: "ABC123" });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel" }),
+    );
+
+    // The wizard stays mounted behind the success dialog with the form still
+    // populated, so any later save would INSERT the published listing again.
+    act(() => result.current.clearDraftStorage({ stopAutosave: true }));
+    const id = await act(() => result.current.saveDraftToSupabase());
+
+    expect(id).toBeNull();
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a draft after clearing while a save is pending", async () => {
+    let resolveSave!: (value: { id: string }) => void;
+    saveDraftListingMock.mockReturnValueOnce(
+      new Promise<{ id: string }>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel" }),
+    );
+
+    let save!: Promise<string | null>;
+    act(() => {
+      save = result.current.saveDraftToSupabase();
+      result.current.clearDraftStorage({ stopAutosave: true });
+    });
+    await act(async () => {
+      resolveSave({ id: "published-draft" });
+      await save;
+    });
+
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_UPDATED_AT_KEY)).toBeNull();
+    expect(result.current.draftId).toBeNull();
+  });
+
+  it("keeps saving after a plain clearDraftStorage so 'start over' still autosaves", async () => {
+    saveDraftListingMock.mockResolvedValue({ id: "fresh-draft", kaupet_code: "ABC123" });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel" }),
+    );
+
+    act(() => result.current.clearDraftStorage());
+    const id = await act(() => result.current.saveDraftToSupabase());
+
+    expect(id).toBe("fresh-draft");
+  });
+
+  it("sends an emptied description as a value, not undefined, so it overwrites the stored text", async () => {
+    saveDraftListingMock.mockResolvedValue({ id: "draft-id", kaupet_code: "ABC123" });
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel", description: "   " }),
+    );
+
+    await act(() => result.current.saveDraftToSupabase());
+
+    const payload = saveDraftListingMock.mock.calls[0][0].data;
+    expect(payload).toHaveProperty("description", "");
+    expect(payload).toHaveProperty("condition", null);
+  });
+
+  it("normalises the legacy 'both' delivery value to 'ship' when restoring a draft", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Gammelt utkast", can_ship: "both", saved_at: Date.now() }),
+    );
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    await waitFor(() => expect(result.current.hasDraftData).not.toBeNull());
+    await act(() =>
+      result.current.restoreDraft({
+        setValue,
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      }),
+    );
+
+    expect(setValue).toHaveBeenCalledWith("can_ship", "ship");
+  });
+
+  it("discards local and owned server draft state", async () => {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ title: "Noe", saved_at: Date.now() }));
+    localStorage.setItem(DRAFT_ID_KEY, "00000000-0000-4000-8000-000000000001");
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    await waitFor(() => expect(result.current.hasDraftData).not.toBeNull());
+    await act(() => result.current.discardDraft());
+
+    expect(result.current.hasDraftData).toBeNull();
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+    expect(clearDraftImagesMock).toHaveBeenCalled();
+    expect(discardDraftListingMock).toHaveBeenCalledWith({
+      data: { id: "00000000-0000-4000-8000-000000000001" },
+    });
+  });
+
+  it("keeps local cleanup when server draft deletion fails", async () => {
+    discardDraftListingMock.mockRejectedValue(new Error("network down"));
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ title: "Noe", saved_at: Date.now() }));
+    localStorage.setItem(DRAFT_ID_KEY, "00000000-0000-4000-8000-000000000001");
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    await waitFor(() => expect(result.current.hasDraftData).not.toBeNull());
+    await act(() => result.current.discardDraft());
+
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+    expect(result.current.draftSaveError).toBe(true);
+  });
+
+  it("does not overwrite a pending restore draft with the new listing title", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Gammel tittel", saved_at: Date.now() }),
+    );
+    localStorage.setItem(DRAFT_ID_KEY, "00000000-0000-4000-8000-000000000001");
+    const { result } = renderHook(() => useDraftAutosave({ ...baseFields, title: "Ny tittel" }));
+
+    await waitFor(() => expect(result.current.hasDraftData).not.toBeNull());
+    const id = await act(() => result.current.saveDraftToSupabase());
+
+    expect(id).toBeNull();
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+  });
+
+  it("restoreDraft applies saved fields onto the form and clears hasDraftData", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        title: "Restored title",
+        postal_code: "0150",
+        category_id: "cat-1",
+        saved_at: Date.now(),
+      }),
+    );
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    const setValue = vi.fn();
+    const setSelectedParentId = vi.fn();
+    const setLocationMethod = vi.fn();
+    const setAttributes = vi.fn();
+
+    await act(() =>
+      result.current.restoreDraft({
+        setValue,
+        setSelectedParentId,
+        setLocationMethod,
+        setAttributes,
+        setCoords: vi.fn(),
+      }),
+    );
+
+    expect(setValue).toHaveBeenCalledWith("title", "Restored title");
+    expect(setValue).toHaveBeenCalledWith("postal_code", "0150");
+    expect(setLocationMethod).toHaveBeenCalledWith("postal");
+    expect(setValue).toHaveBeenCalledWith("category_id", "cat-1");
+    expect(result.current.hasDraftData).toBeNull();
+  });
+
+  it("restoreDraft also restores saved attributes", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        title: "Restored title",
+        attributes: { brand: "Volvo", year: 2020 },
+        saved_at: Date.now(),
+      }),
+    );
+    const { result } = renderHook(() => useDraftAutosave(baseFields));
+
+    const setValue = vi.fn();
+    const setSelectedParentId = vi.fn();
+    const setLocationMethod = vi.fn();
+    const setAttributes = vi.fn();
+
+    await act(() =>
+      result.current.restoreDraft({
+        setValue,
+        setSelectedParentId,
+        setLocationMethod,
+        setAttributes,
+        setCoords: vi.fn(),
+      }),
+    );
+
+    expect(setAttributes).toHaveBeenCalledWith({ brand: "Volvo", year: 2020 });
+  });
+
+  it("restores locally persisted images with the rest of the draft", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ title: "Restored title", saved_at: Date.now() }),
+    );
+    const restored = [{ id: "image-1" }];
+    loadDraftImagesMock.mockResolvedValue(restored);
+    const setImages = vi.fn();
+    const { result } = renderHook(() => useDraftAutosave({ ...baseFields, setImages }));
+
+    await act(() =>
+      result.current.restoreDraft({
+        setValue: vi.fn(),
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      }),
+    );
+
+    expect(setImages).toHaveBeenCalledWith(restored);
+  });
+
+  it("holder draftId null for et utkast som kun finnes lokalt (ingen DRAFT_ID_KEY), og lar DRAFT_KEY stå urørt til brukeren velger", async () => {
+    const localOnlyDraft = { title: "Vintage lenestol i eik", saved_at: Date.now() };
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(localOnlyDraft));
+    // Ingen DRAFT_ID_KEY — utkastet har aldri blitt lagret til serveren.
+    const { result } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "Brompton sykkel" }),
+    );
+    await waitFor(() => expect(result.current.hasDraftData).not.toBeNull());
+    vi.useFakeTimers();
+    // Signalet ny-annonse.tsx bruker for å avgjøre om auto-avvisning er trygt:
+    // uten server-id skal draftId være null, så ruten IKKE auto-avviser og
+    // heller ber brukeren ta et eksplisitt valg før hen går videre.
+    expect(result.current.draftId).toBeNull();
+
+    // 30s-intervallet forsøker en autolagring mens tilbudet fortsatt henger
+    // ubesvart (ruten har ikke kalt dismissDraftOffer) — skal fortsatt være
+    // blokkert, akkurat som for et utkast med server-id.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+    expect(saveDraftListingMock).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}")).toMatchObject(localOnlyDraft);
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBeNull();
+  });
+
+  it("skriver ikke nye bilder over et ubesvart utkasttilbud med server-ID", async () => {
+    const oldDraft = { title: "Vintage lenestol i eik", image_count: 1, saved_at: Date.now() };
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(oldDraft));
+    localStorage.setItem(DRAFT_ID_KEY, "old-draft-id");
+    const newImage = { id: "new-photo" } as never;
+    const { result, rerender } = renderHook((fields) => useDraftAutosave(fields), {
+      initialProps: { ...baseFields, title: "Brompton sykkel" },
+    });
+    await waitFor(() => expect(result.current.hasDraftData).not.toBeNull());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    vi.useFakeTimers();
+    rerender({ ...baseFields, title: "Brompton sykkel", images: [newImage] });
+    await act(async () => {
+      vi.advanceTimersByTime(5_000);
+      await Promise.resolve();
+    });
+
+    expect(saveDraftImagesMock).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "{}")).toMatchObject(oldDraft);
+    expect(localStorage.getItem(DRAFT_ID_KEY)).toBe("old-draft-id");
+    expect(result.current.draftId).toBe("old-draft-id");
+  });
+
+  it("persists attributes into the localStorage draft", () => {
+    vi.useFakeTimers();
+    renderHook(() =>
+      useDraftAutosave({ ...baseFields, title: "En fin sykkel", attributes: { brand: "Trek" } }),
+    );
+
+    act(() => vi.advanceTimersByTime(2000));
+
+    const saved = JSON.parse(localStorage.getItem(DRAFT_KEY)!);
+    expect(saved.attributes).toEqual({ brand: "Trek" });
+  });
+});
+
+it.each([null, "organization-1"])(
+  "gjesteoverføring bevarer kontoutkast og bilder for bedrift %s",
+  async (organizationId) => {
+    const accountKey = `kaupet_draft_sell_listing:user-1:${organizationId ?? "private"}`;
+    const accountIdKey = `kaupet_draft_sell_listing_id:user-1:${organizationId ?? "private"}`;
+    const guestKey = "kaupet_draft_sell_listing:guest:private";
+    const savedAt = Date.now();
+    const handoffKey = `${accountKey}:handoff:${savedAt}`;
+    const oldDraft = JSON.stringify({ title: "Kontoens gamle utkast", saved_at: savedAt - 60000 });
+    localStorage.setItem(accountKey, oldDraft);
+    localStorage.setItem(accountIdKey, "old-server-id");
+    localStorage.setItem(
+      guestKey,
+      JSON.stringify({ title: "Gjestens nye utkast", saved_at: savedAt }),
+    );
+    loadDraftImagesMock.mockImplementation(async (key) =>
+      key === accountKey ? [{ id: "old-image" }] : [],
+    );
+    const { result, unmount } = renderHook(() =>
+      useDraftAutosave({ ...baseFields, organizationId, resumeGuest: true }),
+    );
+    await waitFor(() => expect(result.current.hasDraftData?.title).toBe("Gjestens nye utkast"));
+    await waitFor(() => expect(localStorage.getItem(guestKey)).toBeNull());
+    expect(result.current.draftId).toBeNull();
+    expect(localStorage.getItem(guestKey)).toBeNull();
+    expect(localStorage.getItem(accountKey)).toBe(oldDraft);
+    expect(localStorage.getItem(accountIdKey)).toBe("old-server-id");
+    expect(clearDraftImagesMock).not.toHaveBeenCalledWith(accountKey);
+    unmount();
+    const resumed = renderHook(() =>
+      useDraftAutosave({ ...baseFields, organizationId, title: "Gjestens nye utkast" }),
+    );
+    await waitFor(() =>
+      expect(resumed.result.current.hasDraftData?.title).toBe("Gjestens nye utkast"),
+    );
+    await act(async () => {
+      await resumed.result.current.restoreDraft({
+        setValue: vi.fn(),
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      });
+    });
+    saveDraftListingMock.mockResolvedValue({ id: "new-server-id" });
+    await act(async () => {
+      expect(await resumed.result.current.preparePublish()).toEqual({
+        id: "new-server-id",
+        published: false,
+      });
+    });
+    expect(saveDraftListingMock.mock.calls[0][0].data.id).toBeUndefined();
+    act(() => resumed.result.current.clearDraftStorage({ stopAutosave: true }));
+    expect(localStorage.getItem(handoffKey)).toBeNull();
+    expect(localStorage.getItem(accountKey)).toBe(oldDraft);
+    expect(localStorage.getItem(accountIdKey)).toBe("old-server-id");
+    resumed.unmount();
+  },
+);
