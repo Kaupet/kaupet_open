@@ -1,0 +1,68 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/integrations/supabase/client", () => ({
+  supabase: { storage: { from: () => ({}) } },
+}));
+
+const signMessageAttachmentUrlsFnMock = vi.fn();
+vi.mock("@/lib/storage.functions", () => ({
+  signMessageAttachmentUrls: (...args: unknown[]) => signMessageAttachmentUrlsFnMock(...args),
+}));
+
+import {
+  MAX_ATTACHMENT_PATHS_PER_REQUEST,
+  signListingImageUrls,
+  signMessageAttachmentUrls,
+  signSpin360FrameUrls,
+} from "./storage";
+
+describe("signListingImageUrls / signSpin360FrameUrls", () => {
+  beforeEach(() => {
+    // VITE-varianten må settes fordi koden foretrekker den — ellers slår
+    // utviklerens `.env` (hvis den finnes) gjennom og gjør testen ustabil.
+    vi.stubEnv("VITE_R2_PUBLIC_BASE_URL", "https://bilder.example.no");
+    vi.stubEnv("R2_PUBLIC_BASE_URL", "https://bilder.example.no");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("bygger offentlige URL-er synkront for hver sti, uten noe nettverkskall", () => {
+    const result = signListingImageUrls(["a.jpg", "b.jpg"]);
+    expect(result).toEqual({
+      "a.jpg": "https://bilder.example.no/a.jpg",
+      "b.jpg": "https://bilder.example.no/b.jpg",
+    });
+  });
+
+  it("gjør det samme for 360-bilder", () => {
+    const result = signSpin360FrameUrls(["frames/1.jpg"]);
+    expect(result).toEqual({ "frames/1.jpg": "https://bilder.example.no/frames/1.jpg" });
+  });
+});
+
+describe("signMessageAttachmentUrls", () => {
+  beforeEach(() => {
+    signMessageAttachmentUrlsFnMock.mockReset();
+  });
+
+  it("deler opp over MAX_ATTACHMENT_PATHS_PER_REQUEST stier i flere kall til serverfunksjonen", async () => {
+    const pathCount = MAX_ATTACHMENT_PATHS_PER_REQUEST + 5;
+    const paths = Array.from(
+      { length: pathCount },
+      (_, i) => `conv/${String(i).padStart(4, "0")}.jpg`,
+    );
+
+    signMessageAttachmentUrlsFnMock.mockImplementation(({ data }: { data: { paths: string[] } }) =>
+      Promise.resolve(Object.fromEntries(data.paths.map((p) => [p, `https://signert/${p}`]))),
+    );
+
+    const result = await signMessageAttachmentUrls(paths);
+
+    expect(signMessageAttachmentUrlsFnMock).toHaveBeenCalledTimes(2);
+    for (const path of paths) {
+      expect(result[path]).toBe(`https://signert/${path}`);
+    }
+  });
+});

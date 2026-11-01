@@ -1,0 +1,34 @@
+<!doctype html>
+<!-- kaupet_open: minimal bekreftelsesmal for Supabase Auth, hvit og uten
+     profil. Behold {{ .ConfirmationURL }}. -->
+<html lang="no">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bekreft e-postadressen din</title>
+  </head>
+  <body
+    style="
+      margin: 0;
+      padding: 24px 16px;
+      background-color: #ffffff;
+      color: #171717;
+      font-family: -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;
+      font-size: 15px;
+      line-height: 1.6;
+    "
+  >
+    <div style="max-width: 480px; margin: 0 auto">
+      <h1 style="margin: 0 0 16px; font-size: 20px">Bekreft e-postadressen din</h1>
+      <p style="margin: 0 0 24px">
+        Klikk på lenken for å bekrefte at {{ .Email }} er din e-postadresse.
+      </p>
+      <p style="margin: 0 0 24px">
+        <a href="{{ .ConfirmationURL }}" style="color: #171717">Bekreft e-postadressen</a>
+      </p>
+      <p style="margin: 0; font-size: 12px; color: #737373">
+        Har du ikke opprettet en konto, kan du se bort fra denne e-posten.
+      </p>
+    </div>
+  </body>
+</html>

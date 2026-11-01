@@ -1,0 +1,283 @@
+// @vitest-environment jsdom
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useLocationPicker } from "./use-location-picker";
+
+vi.mock("@/lib/toast", () => ({
+  showErrorToast: vi.fn(),
+}));
+
+const mapAvailability = vi.hoisted(() => ({ MAPS_AVAILABLE: true }));
+vi.mock("@/lib/location-availability", () => mapAvailability);
+
+const lookupPostalCodeMock = vi.fn();
+const reverseGeocodeAddressMock = vi.fn();
+vi.mock("@/lib/geocode", () => ({
+  lookupPostalCode: (...args: unknown[]) => lookupPostalCodeMock(...args),
+  reverseGeocodeAddress: (...args: unknown[]) => reverseGeocodeAddressMock(...args),
+}));
+
+const getCurrentPositionMock = vi.fn();
+const requestLocationPermissionMock = vi.fn();
+const isNativeMock = vi.fn(() => false);
+vi.mock("@/lib/native", () => ({
+  getCurrentPosition: (...args: unknown[]) => getCurrentPositionMock(...args),
+  requestLocationPermission: (...args: unknown[]) => requestLocationPermissionMock(...args),
+  isNative: () => isNativeMock(),
+}));
+
+beforeEach(() => {
+  mapAvailability.MAPS_AVAILABLE = true;
+  lookupPostalCodeMock.mockReset();
+  reverseGeocodeAddressMock.mockReset();
+  getCurrentPositionMock.mockReset();
+  requestLocationPermissionMock.mockReset();
+  isNativeMock.mockReset().mockReturnValue(false);
+});
+
+afterEach(() => vi.useRealTimers());
+
+describe("useLocationPicker", () => {
+  it("switchToPostal clears fields and coords, and selects postal method", () => {
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+
+    act(() => result.current.switchToPostal());
+
+    expect(result.current.locationMethod).toBe("postal");
+    expect(result.current.coords).toBeNull();
+    expect(setValue).toHaveBeenCalledWith("postal_code", "");
+    expect(setValue).toHaveBeenCalledWith("city", "");
+  });
+
+  it("resetLocationMethod clears the method, coords, and form fields", () => {
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+    act(() => result.current.switchToPostal());
+
+    act(() => result.current.resetLocationMethod());
+
+    expect(result.current.locationMethod).toBeNull();
+    expect(result.current.coords).toBeNull();
+  });
+
+  it("fetchMyLocation sets coords and city/postal from the reverse-geocoded position", async () => {
+    getCurrentPositionMock.mockResolvedValue({ coords: { latitude: 59.9, longitude: 10.7 } });
+    reverseGeocodeAddressMock.mockResolvedValue({ city: "Oslo", postal_code: "0150" });
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+
+    await act(() => result.current.fetchMyLocation());
+
+    expect(result.current.locationMethod).toBe("gps");
+    expect(result.current.locationLoading).toBe(false);
+    expect(result.current.coords).toEqual({ lat: 59.9, lng: 10.7 });
+    expect(setValue).toHaveBeenCalledWith("city", "Oslo", { shouldValidate: false });
+    expect(setValue).toHaveBeenCalledWith("postal_code", "0150", { shouldValidate: false });
+  });
+
+  it("fetchMyLocation shows an error and resets the method when the position is unavailable", async () => {
+    const { showErrorToast } = await import("@/lib/toast");
+    getCurrentPositionMock.mockResolvedValue(null);
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+
+    await act(() => result.current.fetchMyLocation());
+
+    expect(result.current.locationMethod).toBeNull();
+    expect(result.current.locationLoading).toBe(false);
+    expect(showErrorToast).toHaveBeenCalledWith("Kunne ikke hente posisjon.");
+  });
+
+  it("fetchMyLocation stops early on native without location permission", async () => {
+    const { showErrorToast } = await import("@/lib/toast");
+    isNativeMock.mockReturnValue(true);
+    requestLocationPermissionMock.mockResolvedValue("denied");
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+
+    await act(() => result.current.fetchMyLocation());
+
+    expect(getCurrentPositionMock).not.toHaveBeenCalled();
+    expect(result.current.locationMethod).toBeNull();
+    expect(showErrorToast).toHaveBeenCalledWith("Gi appen tilgang til posisjon i innstillingene.");
+  });
+
+  it("switchToGps clears fields then runs fetchMyLocation", async () => {
+    getCurrentPositionMock.mockResolvedValue({ coords: { latitude: 1, longitude: 2 } });
+    reverseGeocodeAddressMock.mockResolvedValue({ city: null, postal_code: null });
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+
+    await act(() => result.current.switchToGps());
+
+    expect(setValue).toHaveBeenCalledWith("postal_code", "");
+    expect(result.current.locationMethod).toBe("gps");
+  });
+
+  it("auto-fills the city and coords once a valid postal code is typed after the postal field was last edited", async () => {
+    lookupPostalCodeMock.mockResolvedValue({ city: "Bergen", lat: 60.4, lng: 5.3 });
+    const setValue = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ postalCode }) => useLocationPicker({ postalCode, setValue }),
+      { initialProps: { postalCode: "" } },
+    );
+
+    act(() => {
+      result.current.lastEditedRef.current = "postal_code";
+    });
+    rerender({ postalCode: "5003" });
+
+    await waitFor(() => {
+      expect(setValue).toHaveBeenCalledWith("city", "Bergen", { shouldValidate: false });
+      expect(result.current.coords).toEqual({ lat: 60.4, lng: 5.3 });
+    });
+  });
+
+  it("does not look up an incomplete postal code", async () => {
+    const setValue = vi.fn();
+    const { rerender, result } = renderHook(
+      ({ postalCode }) => useLocationPicker({ postalCode, setValue }),
+      { initialProps: { postalCode: "" } },
+    );
+    act(() => {
+      result.current.lastEditedRef.current = "postal_code";
+    });
+
+    rerender({ postalCode: "50" });
+    await new Promise((r) => setTimeout(r, 600));
+
+    expect(lookupPostalCodeMock).not.toHaveBeenCalled();
+  });
+  it("ignores an old postal response after the postal code changes", async () => {
+    vi.useFakeTimers();
+    let resolveOld!: (value: { city: string; lat: number; lng: number }) => void;
+    lookupPostalCodeMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const setValue = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ postalCode }) => useLocationPicker({ postalCode, setValue }),
+      { initialProps: { postalCode: "" } },
+    );
+    act(() => {
+      result.current.lastEditedRef.current = "postal_code";
+    });
+    rerender({ postalCode: "0152" });
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    rerender({ postalCode: "5003" });
+    await act(async () => {
+      resolveOld({ city: "Oslo", lat: 59.91, lng: 10.75 });
+    });
+    expect(setValue).not.toHaveBeenCalledWith("city", "Oslo", { shouldValidate: false });
+    expect(result.current.coords).toBeNull();
+  });
+
+  it("ignores an old reverse lookup after the marker moves again", async () => {
+    vi.useFakeTimers();
+    let resolveOld!: (value: { city: string; postal_code: string }) => void;
+    reverseGeocodeAddressMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+    act(() => {
+      result.current.lastEditedRef.current = "map";
+      result.current.setCoords({ lat: 59.91, lng: 10.75 });
+    });
+    await act(() => vi.advanceTimersByTimeAsync(300));
+    act(() => result.current.setCoords({ lat: 60.4, lng: 5.3 }));
+    await act(async () => {
+      resolveOld({ city: "Oslo", postal_code: "0152" });
+    });
+    expect(setValue).not.toHaveBeenCalledWith("city", "Oslo", { shouldValidate: false });
+    expect(result.current.coords).toEqual({ lat: 60.4, lng: 5.3 });
+  });
+
+  it("fjerner koordinatene fra forrige postnummer når et nytt oppslag feiler", async () => {
+    lookupPostalCodeMock.mockResolvedValueOnce({ city: "Oslo", lat: 59.9, lng: 10.7 });
+    lookupPostalCodeMock.mockResolvedValueOnce(null);
+    const setValue = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ postalCode }) => useLocationPicker({ postalCode, setValue }),
+      { initialProps: { postalCode: "" } },
+    );
+    act(() => {
+      result.current.lastEditedRef.current = "postal_code";
+    });
+    rerender({ postalCode: "0152" });
+    await waitFor(() => expect(result.current.coords).toEqual({ lat: 59.9, lng: 10.7 }));
+    rerender({ postalCode: "5003" });
+    expect(result.current.coords).toBeNull();
+    await waitFor(() => expect(lookupPostalCodeMock).toHaveBeenCalledTimes(2));
+    expect(result.current.coords).toBeNull();
+  });
+
+  it("ignorerer et sent GPS-svar etter bytte til postnummer", async () => {
+    let resolvePosition!: (value: unknown) => void;
+    getCurrentPositionMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePosition = resolve;
+      }),
+    );
+    reverseGeocodeAddressMock.mockResolvedValue({ city: "Oslo", postal_code: "0152" });
+    const setValue = vi.fn();
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue }));
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.fetchMyLocation();
+    });
+    act(() => result.current.switchToPostal());
+    await act(async () => {
+      resolvePosition({ coords: { latitude: 59.9, longitude: 10.7 } });
+      await pending;
+    });
+
+    expect(result.current.locationMethod).toBe("postal");
+    expect(result.current.coords).toBeNull();
+    expect(result.current.locationLoading).toBe(false);
+    expect(setValue).not.toHaveBeenCalledWith("postal_code", "0152", expect.anything());
+  });
+
+  it("et sent GPS-feilsvar nullstiller ikke et nyere valg", async () => {
+    let rejectPosition!: (reason: unknown) => void;
+    getCurrentPositionMock.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectPosition = reject;
+      }),
+    );
+    const { result } = renderHook(() => useLocationPicker({ postalCode: "", setValue: vi.fn() }));
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.fetchMyLocation();
+    });
+    act(() => result.current.switchToPostal());
+    await act(async () => {
+      rejectPosition(new Error("timeout"));
+      await pending;
+    });
+    expect(result.current.locationMethod).toBe("postal");
+  });
+});
+
+it("bevarer manuelt sted uten å slå opp postnummer når kart er av", async () => {
+  mapAvailability.MAPS_AVAILABLE = false;
+  const setValue = vi.fn();
+  const { result, rerender } = renderHook(
+    ({ postalCode }) => useLocationPicker({ postalCode, setValue }),
+    { initialProps: { postalCode: "" } },
+  );
+  act(() => {
+    result.current.lastEditedRef.current = "postal_code";
+  });
+  rerender({ postalCode: "0152" });
+  expect(setValue).not.toHaveBeenCalled();
+  expect(lookupPostalCodeMock).not.toHaveBeenCalled();
+});

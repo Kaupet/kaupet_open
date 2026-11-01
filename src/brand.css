@@ -1,0 +1,310 @@
+/*
+ * kaupet_open: generisk stilsett. Hvit bakgrunn, nøytrale gråtoner og blå
+ * merkevarefarge; Inter for både overskrifter og brødtekst. Komponentene
+ * leser disse tokenene — mangler ett, faller komponenten tilbake til ingen
+ * farge.
+ *
+ * Tre startlayouter fra oppstartsveiviseren, valgt med VITE_OPEN_LAYOUT og satt
+ * som data-layout på <html>: «hvit» (standard, :root), «lavendel» og «signal»
+ * (nederst). Bygg videre på den du valgte, og slett de andre om du vil.
+ * Veiviseren viser forhåndsvisninger med data-layout på en div, så tokens må
+ * stå på [data-layout=…], ikke bare på :root.
+ */
+
+/* Latin-subsettet holder; UI-et er bare på norsk bokmål. */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
+@theme inline {
+  --font-display: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Flate kort og felt: bare menyer, dialoger og ark (shadow-lg og større)
+   beholder skygge for å skille seg fra siden under. */
+@theme {
+  --shadow-2xs: 0 0 #0000;
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 0 #0000;
+  --shadow-md: 0 0 #0000;
+}
+
+:root,
+[data-layout="hvit"] {
+  /* Skarpe hjørner. Radius-trinnene i src/styles.css (radius ± px) blir da
+     negative og dermed ugyldige, som gir 0. */
+  --radius: 0rem;
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+
+  --surface: oklch(0.985 0 0);
+  --surface-foreground: oklch(0.145 0 0);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+
+  --secondary: oklch(0.985 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+
+  --muted: oklch(0.985 0 0);
+  --muted-foreground: oklch(0.5 0 0);
+
+  /* Nøytral hover-/valgt-flate. */
+  --accent: oklch(0.96 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+
+  /* Merker, ulest-prikker, favoritthjerte og understreken i logoen. Hvit tekst
+     og blå tekst på hvit bakgrunn er begge over 4,5:1. */
+  --brand: oklch(0.55 0.2 260);
+  --brand-foreground: oklch(1 0 0);
+  --brand-text: oklch(0.55 0.2 260);
+
+  --destructive: oklch(0.55 0.22 27);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --border: oklch(0.8 0 0);
+  --input: oklch(0.78 0 0);
+  --ring: oklch(0.205 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --surface: oklch(0.205 0 0);
+  --surface-foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+
+  --brand: oklch(0.72 0.14 260);
+  --brand-foreground: oklch(0.145 0 0);
+  --brand-text: var(--brand);
+  --destructive: oklch(0.65 0.2 27);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(1 0 0 / 16%);
+  --input: oklch(1 0 0 / 20%);
+  --ring: oklch(0.922 0 0);
+}
+
+/* Uttrykket utover tokens. Reglene står utenfor lag, så de vinner over
+   Tailwind-utilitetene; `html:root` vinner over :root i src/styles.css, som
+   lastes etter denne fila. */
+
+/* Tettere: 15 px i stedet for 16 px som grunnenhet krymper tekst og luft
+   likt, og følger fortsatt brukerens skriftstørrelse. */
+html:root {
+  font-size: 93.75%;
+  --density-editorial-block: 1.5rem;
+  --density-editorial-gap: 1rem;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* Ingen pilleformer på knapper, lenker og felt. Avatarer, prikker,
+   skyvekontroller og fremdriftslinjer beholder rundingen. */
+html:not([data-layout="lavendel"]) :where(button, a, input, select, textarea).rounded-full,
+html:not([data-layout="lavendel"]) .rounded-full:has(input, select, textarea) {
+  border-radius: 0;
+}
+
+/* Trinnene over lg legger faste piksler til --radius og blir aldri 0 via
+   tokenet. Gjelder også varianter som rounded-t-2xl og sm:rounded-3xl. */
+html:not([data-layout="lavendel"])
+  :is(
+    [class*="rounded-xl"],
+    [class*="rounded-2xl"],
+    [class*="rounded-3xl"],
+    [class*="rounded-4xl"],
+    [class*="rounded-["]
+  ) {
+  border-radius: 0;
+}
+
+/* Tonede flater (f.eks. «Søket ditt» i filterpanelet) blir rammer. */
+.bg-primary\/5 {
+  background-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* ── Lavendel: myke lilla flater, runde hjørner og skygger ─────────────── */
+
+[data-layout="lavendel"] {
+  --radius: 0.9rem;
+
+  --background: oklch(0.975 0.012 300);
+  --foreground: oklch(0.22 0.05 295);
+  --surface: oklch(0.99 0.006 300);
+  --surface-foreground: oklch(0.22 0.05 295);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.22 0.05 295);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.22 0.05 295);
+
+  --primary: oklch(0.48 0.2 295);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.94 0.03 300);
+  --secondary-foreground: oklch(0.3 0.1 295);
+  --muted: oklch(0.95 0.02 300);
+  --muted-foreground: oklch(0.47 0.05 295);
+  --accent: oklch(0.93 0.04 300);
+  --accent-foreground: oklch(0.3 0.1 295);
+
+  --brand: oklch(0.56 0.2 350);
+  --brand-foreground: oklch(1 0 0);
+  --brand-text: oklch(0.5 0.19 350);
+
+  --border: oklch(0.88 0.03 300);
+  --input: oklch(0.85 0.04 300);
+  --ring: oklch(0.48 0.2 295);
+}
+
+.dark[data-layout="lavendel"] {
+  --background: oklch(0.2 0.03 295);
+  --foreground: oklch(0.96 0.01 300);
+  --surface: oklch(0.25 0.04 295);
+  --surface-foreground: oklch(0.96 0.01 300);
+  --card: oklch(0.25 0.04 295);
+  --card-foreground: oklch(0.96 0.01 300);
+  --popover: oklch(0.25 0.04 295);
+  --popover-foreground: oklch(0.96 0.01 300);
+  --primary: oklch(0.78 0.12 295);
+  --primary-foreground: oklch(0.2 0.05 295);
+  --secondary: oklch(0.3 0.05 295);
+  --secondary-foreground: oklch(0.96 0.01 300);
+  --muted: oklch(0.3 0.05 295);
+  --muted-foreground: oklch(0.75 0.04 300);
+  --accent: oklch(0.32 0.06 295);
+  --accent-foreground: oklch(0.96 0.01 300);
+  --brand: oklch(0.75 0.14 350);
+  --brand-foreground: oklch(0.2 0.05 295);
+  --brand-text: oklch(0.75 0.14 350);
+  --border: oklch(1 0 0 / 14%);
+  --input: oklch(1 0 0 / 18%);
+  --ring: oklch(0.78 0.12 295);
+}
+
+/* Skyggene er flate i @theme over (gjelder ved bygg); her kommer de tilbake. */
+[data-layout="lavendel"] :is(.shadow-xs, .shadow-sm, .shadow-md) {
+  box-shadow:
+    0 1px 2px oklch(0.48 0.2 295 / 0.08),
+    0 4px 12px oklch(0.48 0.2 295 / 0.08);
+}
+
+[data-layout="lavendel"] :is(h1, h2, h3) {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* ── Signal: svart på hvitt med gult, harde skygger og monospace ───────── */
+
+[data-layout="signal"] {
+  --radius: 0rem;
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.13 0 0);
+  --surface: oklch(0.97 0.04 100);
+  --surface-foreground: oklch(0.13 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.13 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.13 0 0);
+
+  /* Svarte knapper med gul tekst. */
+  --primary: oklch(0.13 0 0);
+  --primary-foreground: oklch(0.92 0.17 100);
+  --secondary: oklch(0.95 0.02 100);
+  --secondary-foreground: oklch(0.13 0 0);
+  --muted: oklch(0.96 0.01 100);
+  --muted-foreground: oklch(0.42 0 0);
+  --accent: oklch(0.93 0.12 100);
+  --accent-foreground: oklch(0.13 0 0);
+
+  /* Gult bærer aldri tekst på hvitt (for lav kontrast): brand-text er svart. */
+  --brand: oklch(0.9 0.17 100);
+  --brand-foreground: oklch(0.13 0 0);
+  --brand-text: oklch(0.13 0 0);
+
+  --border: oklch(0.13 0 0);
+  --input: oklch(0.13 0 0);
+  --ring: oklch(0.13 0 0);
+}
+
+.dark[data-layout="signal"] {
+  --background: oklch(0.13 0 0);
+  --foreground: oklch(0.97 0 0);
+  --surface: oklch(0.2 0 0);
+  --surface-foreground: oklch(0.97 0 0);
+  --card: oklch(0.17 0 0);
+  --card-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.17 0 0);
+  --popover-foreground: oklch(0.97 0 0);
+  --primary: oklch(0.9 0.17 100);
+  --primary-foreground: oklch(0.13 0 0);
+  --secondary: oklch(0.22 0 0);
+  --secondary-foreground: oklch(0.97 0 0);
+  --muted: oklch(0.22 0 0);
+  --muted-foreground: oklch(0.72 0 0);
+  --accent: oklch(0.3 0.06 100);
+  --accent-foreground: oklch(0.97 0 0);
+  --brand: oklch(0.9 0.17 100);
+  --brand-foreground: oklch(0.13 0 0);
+  --brand-text: oklch(0.9 0.17 100);
+  --border: oklch(0.97 0 0 / 45%);
+  --input: oklch(0.97 0 0 / 55%);
+  --ring: oklch(0.9 0.17 100);
+}
+
+[data-layout="signal"] :is(.shadow-xs, .shadow-sm, .shadow-md) {
+  box-shadow: 3px 3px 0 var(--foreground);
+}
+
+[data-layout="signal"] :is(h1, h2, h3, .font-display):not([data-preview] *) {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: 0;
+}
+
+[data-layout="signal"] :is(h1, h2) {
+  text-transform: uppercase;
+}
+
+/* Forhåndsvisningene i oppstartsveiviseren (data-preview) får tokens fra sin
+   egen data-layout, men skal ikke arve skygger og fonter fra <html>s layout. */
+[data-preview][data-layout="lavendel"] {
+  box-shadow:
+    0 1px 2px oklch(0.48 0.2 295 / 0.08),
+    0 4px 12px oklch(0.48 0.2 295 / 0.08);
+}
+
+[data-preview][data-layout="signal"] {
+  box-shadow: 3px 3px 0 var(--foreground);
+}
+
+[data-preview][data-layout="signal"] .font-display {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}

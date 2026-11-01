@@ -1,0 +1,6 @@
+# kaupet_open
+
+> En markedsplass for kjøp og salg av brukte ting, bygd på kaupet_open (AGPL-3.0).
+
+- [Forsiden](/): Søk og hovedkategorier.
+- [Annonser](/annonser): Alle aktive annonser, med filtre for kategori, pris og sted.

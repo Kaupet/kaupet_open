@@ -1,0 +1,443 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Camera, ChevronLeft, ChevronRight, ImagePlus, X } from "lucide-react";
+import {
+  DndContext,
+  PointerSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { showErrorToast } from "@/lib/toast";
+import {
+  describeImageError,
+  IMAGE_ACCEPT,
+  MAX_LISTING_IMAGES,
+  validateImages,
+} from "@/lib/storage";
+import { compressImage } from "@/lib/image-compression";
+import { isAiGeneratedImage } from "@/lib/image-metadata";
+import type { RemoteImage } from "@/features/listing-creation/draft-image-sync";
+import { Button } from "@/components/ui/button";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AiImageBadge, AiImageInfo } from "@/components/ai-image-info";
+import { isNative, takeNativePhoto } from "@/lib/native";
+import { formatErrorMessage } from "@/lib/errors";
+
+export type PendingImage = {
+  id: string;
+  file: File;
+  thumbFile: File;
+  previewUrl: string;
+  caption?: string;
+  /** KI-generert ifølge originalfilens C2PA-/IPTC-metadata. */
+  aiGenerated?: boolean;
+  /** Satt når bildet er lastet opp til et serverutkast (se draft-image-sync.ts). */
+  remote?: RemoteImage;
+};
+
+function SortableImageItem({
+  img,
+  idx,
+  count,
+  onMove,
+  onRemove,
+  onCaptionChange,
+}: {
+  img: PendingImage;
+  idx: number;
+  count: number;
+  onMove: (id: string, dir: -1 | 1) => void;
+  onRemove: (id: string) => void;
+  onCaptionChange: (id: string, caption: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: img.id,
+  });
+  return (
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`space-y-1 ${isDragging ? "z-10" : ""}`}
+    >
+      <div
+        className={`group relative aspect-square touch-manipulation overflow-hidden rounded-lg border border-border bg-muted ${
+          isDragging ? "cursor-grabbing opacity-80 shadow-lg" : "cursor-grab"
+        }`}
+        {...attributes}
+        {...listeners}
+      >
+        <img
+          src={img.previewUrl}
+          alt={
+            idx === 0
+              ? `Hovedbilde av annonsen (${img.file.name})`
+              : `Bilde ${idx + 1} av annonsen (${img.file.name})`
+          }
+          className="size-full object-cover"
+          draggable={false}
+        />
+        {idx === 0 && (
+          <span className="absolute left-2 top-2 rounded bg-primary/90 px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-primary-foreground">
+            Hoved
+          </span>
+        )}
+        <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/70 p-1 opacity-100 transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none sm:opacity-0 sm:group-hover:opacity-100">
+          <div className="flex">
+            <button
+              type="button"
+              onClick={() => onMove(img.id, -1)}
+              className="rounded p-1 text-white hover:bg-white/20 disabled:opacity-40"
+              disabled={idx === 0}
+              aria-label="Flytt bakover"
+            >
+              <ChevronLeft className="size-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onMove(img.id, 1)}
+              className="rounded p-1 text-white hover:bg-white/20 disabled:opacity-40"
+              disabled={idx === count - 1}
+              aria-label="Flytt fremover"
+            >
+              <ChevronRight className="size-3.5" />
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => onRemove(img.id)}
+            className="rounded p-1 text-white hover:bg-destructive"
+            aria-label="Fjern bilde"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      </div>
+      <AiImageBadge show={img.aiGenerated} inline />
+      <input
+        type="text"
+        value={img.caption ?? ""}
+        onChange={(e) => onCaptionChange(img.id, e.target.value)}
+        placeholder="Bildetekst (valgfritt)"
+        maxLength={140}
+        className="w-full rounded border border-border bg-surface px-2 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+      />
+    </li>
+  );
+}
+
+export function ImageUploader({
+  images,
+  onChange,
+  uploadProgress,
+}: {
+  images: PendingImage[];
+  onChange: (next: PendingImage[]) => void;
+  uploadProgress?: { done: number; total: number } | null;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const captureInputRef = useRef<HTMLInputElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const aiImageCount = images.filter((image) => image.aiGenerated).length;
+
+  // Revoke object URLs on unmount
+  useEffect(() => {
+    return () => {
+      images.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      setProcessing(true);
+      try {
+        const remaining = MAX_LISTING_IMAGES - images.length;
+        const limitMessage = `En annonse kan ha maksimalt ${MAX_LISTING_IMAGES} bilder.`;
+        if (remaining <= 0) {
+          showErrorToast(limitMessage);
+          return;
+        }
+        // Flervalg i galleriet har ingen grense, så overskuddet hoppes over.
+        const skipped = files.length > remaining;
+        files = files.slice(0, remaining);
+        // Én fil om gangen: originalene fra galleriet kan være store, og mange
+        // samtidige lesinger og komprimeringer kan få appen til å gå tom for minne.
+        const compressed: File[] = [];
+        const thumbs: File[] = [];
+        const aiFlags: boolean[] = [];
+        for (const file of files) {
+          aiFlags.push(await isAiGeneratedImage(file));
+          const [main, thumb] = await Promise.all([
+            compressImage(file, "listing"),
+            compressImage(file, "listing-thumb"),
+          ]);
+          compressed.push(main);
+          thumbs.push(thumb);
+        }
+        const err = validateImages(compressed);
+        if (err) {
+          showErrorToast(describeImageError(err));
+          return;
+        }
+        const next: PendingImage[] = compressed.map((file, i) => ({
+          id: crypto.randomUUID(),
+          file,
+          thumbFile: thumbs[i],
+          previewUrl: URL.createObjectURL(file),
+          aiGenerated: aiFlags[i],
+        }));
+        onChange([...images, ...next]);
+        if (skipped) showErrorToast(`${limitMessage} De ${remaining} første er lagt til.`);
+      } catch (error) {
+        showErrorToast(formatErrorMessage(error, "Kunne ikke behandle bildene. Prøv igjen."));
+      } finally {
+        setProcessing(false);
+      }
+    },
+    [images, onChange],
+  );
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fl = e.target.files;
+    if (!fl) return;
+    void addFiles(Array.from(fl));
+    e.target.value = "";
+  };
+
+  const takePhoto = async () => {
+    try {
+      if (images.length >= MAX_LISTING_IMAGES) {
+        showErrorToast(`En annonse kan ha maksimalt ${MAX_LISTING_IMAGES} bilder.`);
+        return;
+      }
+      const file = await takeNativePhoto();
+      if (file) await addFiles([file]);
+    } catch (e: unknown) {
+      showErrorToast(formatErrorMessage(e, "Kunne ikke åpne kameraet"));
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    void addFiles(Array.from(e.dataTransfer.files));
+  };
+
+  const remove = (id: string) => {
+    const target = images.find((i) => i.id === id);
+    if (target) URL.revokeObjectURL(target.previewUrl);
+    onChange(images.filter((i) => i.id !== id));
+  };
+
+  const move = (id: string, dir: -1 | 1) => {
+    const idx = images.findIndex((i) => i.id === id);
+    if (idx < 0) return;
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= images.length) return;
+    const copy = [...images];
+    const [item] = copy.splice(idx, 1);
+    copy.splice(newIdx, 0, item);
+    onChange(copy);
+  };
+
+  const setCaption = (id: string, caption: string) => {
+    onChange(images.map((i) => (i.id === id ? { ...i, caption } : i)));
+  };
+
+  // Aktiveringsterskler gjør at vanlige klikk/tapp på knappene i flisene
+  // ikke starter en dra-operasjon.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 8 } }),
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const from = images.findIndex((i) => i.id === active.id);
+    const to = images.findIndex((i) => i.id === over.id);
+    if (from < 0 || to < 0) return;
+    onChange(arrayMove(images, from, to));
+  };
+
+  return (
+    <div className="space-y-3" data-composer-no-swipe>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={IMAGE_ACCEPT}
+        multiple
+        onChange={handleFileInput}
+        aria-label="Velg bilder"
+        className="hidden"
+      />
+      <input
+        ref={captureInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleFileInput}
+        aria-label="Ta bilde"
+        data-testid="image-capture-input"
+        className="hidden"
+      />
+
+      {isNative() ? (
+        // Native: to store, tydelige handlinger — kamera direkte, galleri direkte.
+        <div className="flex flex-col gap-2">
+          <Button
+            type="button"
+            variant="default"
+            className="gap-2"
+            onClick={() => void takePhoto()}
+            disabled={processing}
+          >
+            <Camera className="size-4" /> Ta bilde
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            // Filvelgeren gir originalfilen med KI-metadata; Camera-pluginen koder
+            // bildet på nytt og fjerner den.
+            onClick={() => inputRef.current?.click()}
+            disabled={processing}
+          >
+            Velg fra bilder
+          </Button>
+        </div>
+      ) : (
+        <>
+          {/* Web, smal skjerm: samme to store handlinger som native. */}
+          <div className="flex flex-col gap-2 sm:hidden">
+            <Button
+              type="button"
+              variant="default"
+              className="gap-2"
+              onClick={() => captureInputRef.current?.click()}
+              disabled={processing}
+            >
+              <Camera className="size-4" /> Ta bilde
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => inputRef.current?.click()}
+              disabled={processing}
+            >
+              Velg fra bilder
+            </Button>
+          </div>
+
+          {/* Desktop: rolig slippsone med hårstrek-ramme. */}
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            className={`hidden flex-col items-center justify-center rounded-lg border px-6 py-6 text-center transition-[background-color,border-color,opacity,transform] duration-150 ease-out motion-reduce:transition-none sm:flex ${
+              dragOver
+                ? "border-primary bg-primary/5"
+                : "border-border bg-surface hover:border-primary/40"
+            }`}
+          >
+            <ImagePlus className="mb-2 size-7 text-muted-foreground" />
+            <p className="text-sm font-medium">
+              {dragOver ? "Slipp her for å laste opp" : "Legg til bilder"}
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => inputRef.current?.click()}
+              disabled={processing}
+            >
+              Velg bilder
+            </Button>
+          </div>
+        </>
+      )}
+
+      {images.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          Tips: Ta minst ett bilde av hele tingen i dagslys, og et nærbilde av eventuelle skader.
+        </p>
+      )}
+
+      {processing && (
+        <p className="text-sm font-medium text-primary" role="status" aria-live="polite">
+          Behandler bilder…
+        </p>
+      )}
+
+      {uploadProgress && (
+        <p className="text-sm font-medium text-primary" role="status" aria-live="polite">
+          Laster opp bilde {uploadProgress.done} av {uploadProgress.total}…
+        </p>
+      )}
+
+      {images.length > 0 && (
+        <>
+          <p className="text-xs text-muted-foreground">
+            {images.length} {images.length === 1 ? "bilde" : "bilder"}
+          </p>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext items={images.map((i) => i.id)} strategy={rectSortingStrategy}>
+              <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                {images.map((img, idx) => (
+                  <SortableImageItem
+                    key={img.id}
+                    img={img}
+                    idx={idx}
+                    count={images.length}
+                    onMove={move}
+                    onRemove={remove}
+                    onCaptionChange={setCaption}
+                  />
+                ))}
+              </ul>
+            </SortableContext>
+          </DndContext>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            {aiImageCount > 0 && (
+              <Alert
+                role="region"
+                aria-label="Informasjon om bildemerking"
+                className="border-0 bg-surface"
+              >
+                <AlertTitle>
+                  {aiImageCount} av {images.length} {images.length === 1 ? "bilde" : "bilder"} blir
+                  merket
+                </AlertTitle>
+                <AlertDescription>
+                  <p>
+                    {aiImageCount === 1
+                      ? "Bildefilen oppgir at KI er brukt. Dette bildet får et merke som er synlig for alle som ser annonsen."
+                      : "Bildefilene oppgir at KI er brukt. Disse bildene får et merke som er synlig for alle som ser annonsen."}
+                  </p>
+                  <AiImageInfo className="mt-1 justify-start px-0 underline underline-offset-4">
+                    Om merkingen
+                  </AiImageInfo>
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Dra bildene for å endre rekkefølgen. Det første bildet blir hovedbildet.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}

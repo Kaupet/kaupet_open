@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- kaupet_open: understreken fra ordmerket kaupet_open i merkevarefargen.
+       Kilde til favicon.ico (partallskoordinater, så 16 px blir skarpt). -->
+  <rect width="32" height="32" fill="#171717"/>
+  <rect x="6" y="20" width="20" height="6" fill="#3b6cf0"/>
+</svg>

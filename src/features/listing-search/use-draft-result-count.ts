@@ -1,0 +1,75 @@
+import { useQuery } from "@tanstack/react-query";
+
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import type { Category } from "@/lib/categories";
+import {
+  writeAppliedSearchState,
+  type AppliedSearchState,
+} from "@/features/listing-search/search-schema";
+import {
+  buildListingsSearchRpcArgs,
+  listingsSearchReady,
+  runListingsSearch,
+} from "@/features/listing-search/listing-search-query";
+
+const DRAFT_COUNT_DEBOUNCE_MS = 350;
+
+type DraftCountInput = { draft: AppliedSearchState };
+
+export function draftToSearchParams({ draft }: DraftCountInput) {
+  return writeAppliedSearchState(draft);
+}
+
+export async function countDraftListings(
+  {
+    draft,
+    categories,
+  }: DraftCountInput & {
+    categories: Pick<Category, "id" | "slug" | "parent_id">[];
+  },
+  signal?: AbortSignal,
+) {
+  const search = draftToSearchParams({ draft });
+  const args = buildListingsSearchRpcArgs({
+    search,
+    categories,
+    effectiveCategories: draft.value.categories,
+    terms: draft.value.terms,
+    limit: 1,
+    offset: 0,
+    includeRecentlySold: true,
+  });
+  if (!args) return 0;
+  const rows = await runListingsSearch(args, signal);
+  return rows[0]?.total_count ?? 0;
+}
+
+export function useDraftResultCount({
+  draft,
+  categories,
+  enabled,
+}: DraftCountInput & {
+  categories: Pick<Category, "id" | "slug" | "parent_id">[];
+  enabled: boolean;
+}) {
+  const liveInput = { draft };
+  const debouncedInput = useDebouncedValue(liveInput, DRAFT_COUNT_DEBOUNCE_MS);
+  const liveKey = JSON.stringify(liveInput);
+  const debouncedKey = JSON.stringify(debouncedInput);
+  const search = draftToSearchParams(debouncedInput);
+
+  const query = useQuery({
+    queryKey: ["draft-listing-count", search],
+    // Samme grunn som i useListingsQuery: en ulastet kategoriliste er ikke
+    // "ingen treff" (se listingsSearchReady).
+    enabled: enabled && listingsSearchReady(draft.value.categories, categories),
+    staleTime: 30_000,
+    queryFn: ({ signal }) => countDraftListings({ ...debouncedInput, categories }, signal),
+  });
+
+  return {
+    count: liveKey === debouncedKey ? query.data : undefined,
+    isPending: enabled && (liveKey !== debouncedKey || query.isPending || query.isFetching),
+    isError: query.isError,
+  };
+}

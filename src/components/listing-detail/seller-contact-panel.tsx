@@ -1,0 +1,258 @@
+import { Link } from "@tanstack/react-router";
+import { formatMonthYear } from "@/lib/format";
+import {
+  Building2,
+  MessageCircle,
+  Phone,
+  Share2,
+  ShieldCheck,
+  User as UserIcon,
+} from "lucide-react";
+
+import { ProffListingHeader } from "@/components/listing-detail/proff-listing-presentation";
+import type { ProffOrganizationPresentation } from "@/components/listing-detail/proff-listing-types";
+import { Button } from "@/components/ui/button";
+import { FavoriteButton } from "@/components/favorite-button";
+import { ShareListingDialog } from "@/components/share-listing-dialog";
+import { StarRating } from "@/components/star-rating";
+import { TradeSafetyAdvice } from "@/components/trade-safety-advice";
+import { formatOrganizationNumber } from "@/lib/organization-number";
+import { formatPhone, phoneHref } from "@/lib/phone";
+
+export type SellerIdentity =
+  | {
+      kind: "private";
+      display_name: string | null;
+      avatar_url: string | null;
+      created_at: string;
+      avg_rating?: number;
+      review_count?: number;
+    }
+  | {
+      kind: "business";
+      /** Gir lenke til den offentlige bedriftsprofilen. */
+      organizationId?: string;
+      displayName: string;
+      organizationNumber: string;
+      visitingAddress?: string | null;
+      /** Telefonnumre bedriften har valgt å vise for annonsens lokasjon. */
+      contacts?: SellerContact[];
+      createdAt: string;
+    };
+
+export type SellerContact = {
+  id: string;
+  name: string;
+  phone: string;
+  /** Kun satt for bedrifter med aktiv Proff. */
+  avatarUrl: string | null;
+};
+
+function SellerContactList({ contacts }: { contacts: SellerContact[] }) {
+  return (
+    <ul className="mt-4 space-y-2" aria-label="Ring selger">
+      {contacts.map((contact) => (
+        <li key={contact.id} className="flex items-center gap-3">
+          {contact.avatarUrl ? (
+            <img
+              src={contact.avatarUrl}
+              alt=""
+              className="size-10 shrink-0 rounded-full object-cover"
+            />
+          ) : (
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted">
+              <UserIcon className="size-5 text-muted-foreground" aria-hidden="true" />
+            </span>
+          )}
+          <div className="min-w-0 flex-1 text-sm">
+            <p className="truncate font-medium">{contact.name}</p>
+            <a
+              href={phoneHref(contact.phone)}
+              className="inline-flex min-h-8 items-center gap-1.5 text-primary underline-offset-4 hover:underline"
+              aria-label={`Ring ${contact.name} på ${formatPhone(contact.phone)}`}
+            >
+              <Phone className="size-3.5" aria-hidden="true" />
+              {formatPhone(contact.phone)}
+            </a>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function SellerContactPanel({
+  isLoggedIn,
+  seller,
+  isOwner,
+  isSold = false,
+  sellerId,
+  listingId,
+  kaupetCode,
+  title,
+  onContact,
+  contacting,
+  shareOpen,
+  onShareOpenChange,
+  isNative,
+  organizationBrand,
+}: {
+  isLoggedIn: boolean;
+  seller: SellerIdentity | null;
+  isOwner: boolean;
+  /** Solgt annonse: ingen ny kontakt — kjøperen har allerede samtalen i innboksen. */
+  isSold?: boolean;
+  /** Selgerens bruker-id — private selgere får lenke til den offentlige profilen. */
+  sellerId?: string;
+  listingId: string;
+  kaupetCode: string;
+  title: string;
+  onContact: () => void;
+  contacting: boolean;
+  shareOpen: boolean;
+  onShareOpenChange: (open: boolean) => void;
+  isNative?: boolean;
+  /** Proff-bedrifter: profileringen erstatter den nøytrale identitetsraden. */
+  organizationBrand?: ProffOrganizationPresentation;
+}) {
+  const branded = seller?.kind === "business" && !!organizationBrand;
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      {branded && <ProffListingHeader organization={organizationBrand} inCard />}
+      <div className={branded ? "text-sm" : "flex items-center gap-3"}>
+        {branded ? null : seller?.kind === "private" && seller.avatar_url ? (
+          <img
+            src={seller.avatar_url}
+            alt={seller.display_name ? `Profilbilde av ${seller.display_name}` : "Profilbilde"}
+            className="size-10 rounded-full object-cover"
+          />
+        ) : (
+          <div className="flex size-10 items-center justify-center rounded-full bg-muted">
+            {seller?.kind === "business" ? (
+              <Building2 className="size-5 text-muted-foreground" aria-hidden="true" />
+            ) : (
+              <UserIcon className="size-5 text-muted-foreground" />
+            )}
+          </div>
+        )}
+        <div className="text-sm">
+          {seller?.kind === "private" ? (
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {sellerId ? (
+                  <Link
+                    to="/bruker/$id"
+                    params={{ id: sellerId }}
+                    className="font-medium hover:underline"
+                  >
+                    {seller?.display_name ?? "Selger"}
+                  </Link>
+                ) : (
+                  <p className="font-medium">{seller?.display_name ?? "Selger"}</p>
+                )}
+                <span className="text-xs text-muted-foreground">Privatperson</span>
+              </div>
+              {!!seller?.review_count && (
+                <div
+                  className="mt-0.5 flex items-center gap-1.5"
+                  aria-label={`${seller.avg_rating?.toFixed(1)} av 5 stjerner, basert på ${seller.review_count} vurderinger`}
+                >
+                  <StarRating value={seller.avg_rating ?? 0} readOnly size={13} />
+                  <span className="text-xs text-muted-foreground">({seller.review_count})</span>
+                </div>
+              )}
+              {seller?.created_at && (
+                <p className="text-xs text-muted-foreground">
+                  Medlem siden {formatMonthYear(seller.created_at)}
+                </p>
+              )}
+            </>
+          ) : seller?.kind === "business" ? (
+            branded ? (
+              seller.visitingAddress && (
+                <p className="text-xs text-muted-foreground">
+                  Besøksadresse: {seller.visitingAddress}
+                </p>
+              )
+            ) : (
+              <>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {seller.organizationId ? (
+                    <Link
+                      to="/bedrift/$organizationId"
+                      params={{ organizationId: seller.organizationId }}
+                      className="font-medium hover:underline"
+                    >
+                      {seller.displayName}
+                    </Link>
+                  ) : (
+                    <p className="font-medium">{seller.displayName}</p>
+                  )}
+                  <span className="text-xs text-muted-foreground">Bedrift</span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Org.nr. {formatOrganizationNumber(seller.organizationNumber)}
+                </p>
+                {seller.visitingAddress && (
+                  <p className="text-xs text-muted-foreground">
+                    Besøksadresse: {seller.visitingAddress}
+                  </p>
+                )}
+              </>
+            )
+          ) : !isLoggedIn ? (
+            <div className="flex items-start gap-1.5 text-muted-foreground">
+              <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
+              <p>
+                Selgerprofilen kunne ikke lastes. Du kan fortsatt kontakte selger etter innlogging.
+              </p>
+            </div>
+          ) : (
+            <p className="font-medium">Selger</p>
+          )}
+        </div>
+      </div>
+
+      {seller?.kind === "business" && !!seller.contacts?.length && (
+        <SellerContactList contacts={seller.contacts} />
+      )}
+
+      {!isOwner && !isSold && (
+        <div className="mt-4 space-y-3">
+          {seller?.kind !== "business" && <TradeSafetyAdvice context="contact" />}
+          <Button className="w-full gap-2" onClick={onContact} disabled={contacting}>
+            <MessageCircle className="size-4" />
+            {contacting
+              ? "Åpner samtale…"
+              : seller?.kind === "business"
+                ? "Send melding til bedriften"
+                : "Send melding til selger"}
+          </Button>
+        </div>
+      )}
+      <div className="mt-2 flex flex-col gap-2">
+        {/* Favouriting your own listing does nothing useful — it just puts the
+            ad you already own in your own "saved for later" list. */}
+        {!isOwner && (
+          <FavoriteButton listingId={listingId} variant="full" size="lg" className="w-full" />
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full gap-2"
+          onClick={() => onShareOpenChange(true)}
+        >
+          <Share2 className="size-4" /> Del annonse
+        </Button>
+      </div>
+
+      <ShareListingDialog
+        open={shareOpen}
+        onOpenChange={onShareOpenChange}
+        kaupetCode={kaupetCode}
+        title={title}
+        isNative={isNative}
+      />
+    </div>
+  );
+}

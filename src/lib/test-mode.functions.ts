@@ -1,0 +1,29 @@
+import { createServerFn } from "@tanstack/react-start";
+import { setCookie, deleteCookie } from "@tanstack/react-start/server";
+import { z } from "zod";
+
+import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { requireAdminOrDemoRole } from "@/lib/admin-auth.server";
+import { TEST_MODE_COOKIE } from "@/lib/env";
+
+const schema = z.object({ enabled: z.boolean() });
+
+export const setTestMode = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((i: unknown) => schema.parse(i))
+  .handler(async ({ data, context }) => {
+    await requireAdminOrDemoRole(context.supabase, context.userId);
+
+    if (data.enabled) {
+      setCookie(TEST_MODE_COOKIE, "1", {
+        path: "/",
+        maxAge: 60 * 60 * 24 * 30,
+        sameSite: "lax",
+        secure: process.env.NODE_ENV === "production",
+        httpOnly: false,
+      });
+    } else {
+      deleteCookie(TEST_MODE_COOKIE, { path: "/" });
+    }
+    return { enabled: data.enabled };
+  });

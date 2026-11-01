@@ -1,0 +1,655 @@
+import {
+  conversationWtbListingId,
+  WTB_CONVERSATION_COLUMN,
+  WTB_CONVERSATION_RELATION,
+} from "@/features/wtb/availability";
+import { withOrganizationSellers } from "@/lib/conversation-organizations";
+import { LISTING_ORGANIZATION_COLUMN } from "@/lib/listing-business-data";
+import { formatDayMonth } from "@/lib/format";
+import { Link } from "@tanstack/react-router";
+import { NativePageHeader } from "@/components/native-page-header";
+import { PullToRefreshIndicator } from "@/components/pull-to-refresh-indicator";
+import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
+import { useIsNative } from "@/hooks/use-is-native";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import {
+  MessageCircle,
+  ChevronDown,
+  ChevronRight,
+  BellRing,
+  Loader2,
+  X,
+  Trash2,
+  RotateCcw,
+} from "lucide-react";
+import { showSuccessToast, showErrorToast } from "@/lib/toast";
+
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
+import { signListingImageUrls } from "@/lib/storage";
+import { displayPriceNok, formatPrice, formatWtbMaxPrice } from "@/lib/format";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { SwipeToDeleteRow } from "@/components/swipe-to-delete-row";
+import { isUnread } from "@/lib/unread";
+import { lastConversationMessages, messagePreview } from "@/lib/conversation-messages";
+import { usePushStatus } from "@/hooks/use-push-status";
+import { formatErrorMessage } from "@/lib/errors";
+import { SITE_NAME } from "@/lib/site";
+
+/** Kjøpsønsket en samtale gjelder (wtb_listings-joinen). */
+export type WtbListingRef = { id: string; title: string; max_price_nok: number | null };
+
+type ConversationRow = {
+  id: string;
+  buyer_id: string;
+  seller_id: string;
+  listing_id: string | null;
+  wtb_listing: WtbListingRef | null;
+  last_message_at: string;
+  buyer_last_read_at: string | null;
+  seller_last_read_at: string | null;
+  buyer_deleted_at: string | null;
+  seller_deleted_at: string | null;
+  listing: {
+    id: string;
+    title: string;
+    price_nok: number | null;
+    is_free: boolean;
+    status: string;
+    attributes: Record<string, unknown> | null;
+    categories: { slug: string } | { slug: string }[] | null;
+    listing_images: { storage_path: string; sort_order: number }[];
+  } | null;
+  buyer: {
+    id: string;
+    display_name: string;
+    avatar_url: string | null;
+    deleted_at: string | null;
+  } | null;
+  seller: {
+    id: string;
+    display_name: string;
+    avatar_url: string | null;
+    deleted_at: string | null;
+  } | null;
+  last_message: { body: string; created_at: string; sender_id: string } | null;
+};
+
+// Raw shapes before flattening relations — Supabase-js can't infer relation
+// cardinality for these joins, so each comes back as object, array, or null.
+type RawProfile = {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+  deleted_at: string | null;
+};
+type RawListingRel = {
+  id: string;
+  title: string;
+  price_nok: number | null;
+  is_free: boolean;
+  status: string;
+  attributes: Record<string, unknown> | null;
+  categories: { slug: string } | { slug: string }[] | null;
+  listing_images: { storage_path: string; sort_order: number }[];
+};
+type RawConv = {
+  id: string;
+  buyer_id: string;
+  seller_id: string;
+  listing_id: string | null;
+  wtb_listing: WtbListingRef | WtbListingRef[] | null;
+  last_message_at: string;
+  buyer_last_read_at: string | null;
+  seller_last_read_at: string | null;
+  buyer_deleted_at: string | null;
+  seller_deleted_at: string | null;
+  listing: RawListingRel | RawListingRel[] | null;
+  buyer?: RawProfile | RawProfile[] | null;
+  seller?: RawProfile | RawProfile[] | null;
+};
+
+export function InboxPage() {
+  const native = useIsNative();
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const [view, setView] = useState<"inbox" | "trash">("inbox");
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const { refreshing, pullDistance } = usePullToRefresh({
+    enabled: native,
+    onRefresh: async () => {
+      await qc.resetQueries({ queryKey: ["my-conversations"] });
+    },
+  });
+
+  const {
+    data: conversations,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
+    queryKey: ["my-conversations", user?.id, view],
+    enabled: !!user,
+    queryFn: async (): Promise<ConversationRow[]> => {
+      const trashCutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+      const visibility =
+        view === "inbox"
+          ? `and(buyer_id.eq.${user!.id},buyer_deleted_at.is.null),and(seller_id.eq.${user!.id},seller_deleted_at.is.null)`
+          : `and(buyer_id.eq.${user!.id},buyer_deleted_at.gte.${trashCutoff}),and(seller_id.eq.${user!.id},seller_deleted_at.gte.${trashCutoff})`;
+      const { data, error } = await supabase
+        .from("conversations")
+        .select(
+          `id, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
+           listing:listings(id${LISTING_ORGANIZATION_COLUMN}, title, price_nok, is_free, status, attributes, categories(slug), listing_images(storage_path, sort_order))${WTB_CONVERSATION_RELATION},
+           buyer:profiles!conversations_buyer_id_fkey(id, display_name, avatar_url, deleted_at),
+           seller:profiles!conversations_seller_id_fkey(id, display_name, avatar_url, deleted_at)`,
+        )
+        .or(visibility)
+        .order("last_message_at", { ascending: false });
+      if (error) {
+        const { data: convs, error: e2 } = await supabase
+          .from("conversations")
+          .select(
+            `id, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
+             listing:listings(id${LISTING_ORGANIZATION_COLUMN}, title, price_nok, is_free, status, attributes, categories(slug), listing_images(storage_path, sort_order))${WTB_CONVERSATION_RELATION}`,
+          )
+          .or(visibility)
+          .order("last_message_at", { ascending: false });
+        if (e2) throw e2;
+        const rawConvs = (convs ?? []) as unknown as RawConv[];
+        const ids = Array.from(new Set(rawConvs.flatMap((c) => [c.buyer_id, c.seller_id])));
+        const { data: profiles } = await supabase
+          .from("profiles")
+          .select("id, display_name, avatar_url, deleted_at")
+          .in("id", ids);
+        const pmap = new Map((profiles ?? []).map((p) => [p.id, p]));
+        const enriched = rawConvs.map((c) => ({
+          ...c,
+          listing: Array.isArray(c.listing) ? c.listing[0] : c.listing,
+          wtb_listing: (Array.isArray(c.wtb_listing) ? c.wtb_listing[0] : c.wtb_listing) ?? null,
+          buyer: pmap.get(c.buyer_id) ?? null,
+          seller: pmap.get(c.seller_id) ?? null,
+        }));
+        return hideUnstartedForCounterpart(
+          await attachLastMessage(await withOrganizationSellers(enriched, user!.id)),
+          user!.id,
+        );
+      }
+      const normalised = ((data ?? []) as unknown as RawConv[]).map((c) => ({
+        ...c,
+        listing: Array.isArray(c.listing) ? c.listing[0] : c.listing,
+        wtb_listing: (Array.isArray(c.wtb_listing) ? c.wtb_listing[0] : c.wtb_listing) ?? null,
+        buyer: (Array.isArray(c.buyer) ? c.buyer[0] : c.buyer) ?? null,
+        seller: (Array.isArray(c.seller) ? c.seller[0] : c.seller) ?? null,
+      }));
+      return hideUnstartedForCounterpart(
+        await attachLastMessage(await withOrganizationSellers(normalised, user!.id)),
+        user!.id,
+      );
+    },
+  });
+
+  const trashMut = useMutation({
+    mutationFn: async ({ row, restore }: { row: ConversationRow; restore: boolean }) => {
+      if (!user) throw new Error("Ikke innlogget");
+      const field = user.id === row.buyer_id ? "buyer_deleted_at" : "seller_deleted_at";
+      const update =
+        field === "buyer_deleted_at"
+          ? { buyer_deleted_at: restore ? null : new Date().toISOString() }
+          : { seller_deleted_at: restore ? null : new Date().toISOString() };
+      const { error } = await supabase.from("conversations").update(update).eq("id", row.id);
+      if (error) throw error;
+    },
+    onSuccess: (_, { restore }) => {
+      void qc.invalidateQueries({ queryKey: ["my-conversations"] });
+      void qc.invalidateQueries({ queryKey: ["messages-preview"] });
+      void qc.invalidateQueries({ queryKey: ["unread-conversations"] });
+      showSuccessToast(
+        restore ? "Samtalen er gjenopprettet" : "Samtalen er flyttet til papirkurven",
+      );
+    },
+    onError: (error: Error) =>
+      showErrorToast(formatErrorMessage(error, "Kunne ikke oppdatere samtalen")),
+  });
+
+  // Bilde-URLer for omslagsbilder
+  const imgUrls = useMemo(() => {
+    const paths = (conversations ?? [])
+      .map((c) => {
+        const imgs = (c.listing?.listing_images ?? [])
+          .slice()
+          .sort((a, b) => a.sort_order - b.sort_order);
+        return imgs[0]?.storage_path;
+      })
+      .filter((p): p is string => !!p);
+    return signListingImageUrls(paths);
+  }, [conversations]);
+
+  // Beregn uleste per samtale
+  const unreadByConv = useMemo(() => {
+    const m = new Map<string, boolean>();
+    for (const c of conversations ?? []) {
+      const myLastReadAt = c.buyer_id === user?.id ? c.buyer_last_read_at : c.seller_last_read_at;
+      m.set(c.id, isUnread(c.last_message_at, c.last_message?.sender_id, user?.id, myLastReadAt));
+    }
+    return m;
+  }, [conversations, user?.id]);
+
+  // Grupper etter annonse
+  const groups = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        listing: ConversationRow["listing"];
+        wtbListing: WtbListingRef | null;
+        conversations: ConversationRow[];
+        lastActivity: string;
+        unreadCount: number;
+      }
+    >();
+    for (const c of conversations ?? []) {
+      // Grupper per annonsetype og ID: kjøpsønsker har ikke listing_id og
+      // får hver sin gruppe også når salgsannonsen mangler.
+      const wtbId = conversationWtbListingId(c);
+      const key = c.listing_id
+        ? `listing:${c.listing_id}`
+        : wtbId
+          ? `wtb:${wtbId}`
+          : `conversation:${c.id}`;
+      const u = unreadByConv.get(c.id) ? 1 : 0;
+      const g = map.get(key);
+      if (g) {
+        g.conversations.push(c);
+        g.unreadCount += u;
+        if (c.last_message_at > g.lastActivity) g.lastActivity = c.last_message_at;
+      } else {
+        map.set(key, {
+          listing: c.listing,
+          wtbListing: c.wtb_listing,
+          conversations: [c],
+          lastActivity: c.last_message_at,
+          unreadCount: u,
+        });
+      }
+    }
+    return Array.from(map.entries())
+      .map(([listingId, g]) => ({ listingId, ...g }))
+      .sort((a, b) => (a.lastActivity < b.lastActivity ? 1 : -1));
+  }, [conversations, unreadByConv]);
+
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-10">
+      <NativePageHeader title="Meldinger" hideBack />
+      {native && <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />}
+      {!native && (
+        <div className="flex items-center gap-3">
+          <MessageCircle className="size-6 text-brand" />
+          <h1 className="font-display text-3xl tracking-tight">Meldinger</h1>
+        </div>
+      )}
+      <p className="mt-1 text-sm text-muted-foreground">
+        Samtalene dine er gruppert etter annonse.
+      </p>
+      <Tabs
+        value={view}
+        onValueChange={(value) => setView(value as "inbox" | "trash")}
+        className="mt-6"
+      >
+        <TabsList aria-label="Meldingsvisning">
+          <TabsTrigger value="inbox">Innboks</TabsTrigger>
+          <TabsTrigger value="trash">Papirkurv</TabsTrigger>
+        </TabsList>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Samtaler i papirkurven tømmes automatisk etter 14 dager.
+        </p>
+
+        {view === "inbox" && <PushHintForMessages />}
+
+        <TabsContent value={view}>
+          <div className="mt-8 space-y-3">
+            {isLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-20" />
+                ))}
+              </div>
+            ) : isError ? (
+              <EmptyState
+                icon={MessageCircle}
+                title="Kunne ikke hente samtalene"
+                description={formatErrorMessage(error, "Prøv igjen om litt.")}
+                action={<Button onClick={() => void refetch()}>Prøv igjen</Button>}
+              />
+            ) : groups.length === 0 ? (
+              <EmptyState
+                icon={view === "trash" ? Trash2 : MessageCircle}
+                title={view === "trash" ? "Papirkurven er tom" : "Ingen samtaler enda"}
+                description={
+                  view === "trash"
+                    ? "Samtaler i papirkurven tømmes automatisk etter 14 dager."
+                    : "Når du eller noen andre starter en samtale om en annonse, dukker den opp her."
+                }
+                action={
+                  view === "inbox" ? (
+                    <Link to="/annonser" search={{ q: "", category: "", sort: "new" }}>
+                      <Button>Utforsk annonser</Button>
+                    </Link>
+                  ) : undefined
+                }
+              />
+            ) : (
+              groups.map((g) => {
+                const isExpanded = expanded[g.listingId] ?? true;
+                const cover = (g.listing?.listing_images ?? [])
+                  .slice()
+                  .sort((a, b) => a.sort_order - b.sort_order)[0];
+                const coverUrl = cover ? imgUrls[cover.storage_path] : undefined;
+                // Same total as the listing card and detail page: for a
+                // vehicle where the buyer pays the re-registration fee, this
+                // must not show the seller's bare price_nok (F4).
+                const priceLabel = g.listing
+                  ? formatPrice({
+                      price_nok: displayPriceNok({
+                        category_slug:
+                          (Array.isArray(g.listing.categories)
+                            ? g.listing.categories[0]
+                            : g.listing.categories
+                          )?.slug ?? null,
+                        price_nok: g.listing.price_nok,
+                        attributes: g.listing.attributes,
+                      }),
+                      is_free: g.listing.is_free,
+                    })
+                  : g.wtbListing
+                    ? g.wtbListing.max_price_nok != null
+                      ? formatWtbMaxPrice(g.wtbListing.max_price_nok, "Ønskes kjøpt · maks ")
+                      : "Ønskes kjøpt"
+                    : "Pris ved henvendelse";
+                return (
+                  <div
+                    key={g.listingId}
+                    className="overflow-hidden rounded-xl border border-border bg-card"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setExpanded((p) => ({ ...p, [g.listingId]: !isExpanded }))}
+                      className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted/40"
+                    >
+                      <div className="size-14 shrink-0 overflow-hidden rounded-lg bg-muted">
+                        {coverUrl ? (
+                          <img src={coverUrl} alt="" className="size-full object-cover" />
+                        ) : null}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">
+                          {g.listing?.title ?? g.wtbListing?.title ?? "Slettet annonse"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {priceLabel} · {g.conversations.length}{" "}
+                          {g.conversations.length === 1 ? "samtale" : "samtaler"}
+                        </p>
+                      </div>
+                      {g.unreadCount > 0 && (
+                        <span
+                          className="flex h-5 min-w-5 items-center justify-center rounded-full bg-brand px-1.5 text-2xs font-semibold text-brand-foreground"
+                          aria-label={`${g.unreadCount} uleste`}
+                        >
+                          {g.unreadCount}
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        {formatRelative(g.lastActivity)}
+                      </span>
+                      {isExpanded ? (
+                        <ChevronDown className="size-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="size-4 text-muted-foreground" />
+                      )}
+                    </button>
+
+                    {isExpanded && (
+                      <ul className="divide-y divide-border border-t border-border">
+                        {g.conversations
+                          .slice()
+                          .sort((a, b) => (a.last_message_at < b.last_message_at ? 1 : -1))
+                          .map((c) => {
+                            const other = user?.id === c.seller_id ? c.buyer : c.seller;
+                            const lastFromMe = c.last_message?.sender_id === user?.id;
+                            const unread = unreadByConv.get(c.id) ?? false;
+                            const row = (
+                              <div className="flex items-center">
+                                <Link
+                                  to="/meldinger/$id"
+                                  params={{ id: c.id }}
+                                  className={`flex min-w-0 flex-1 items-center gap-3 p-3 hover:bg-muted/40 data-[status=active]:bg-accent/10 ${unread ? "bg-brand/5" : ""}`}
+                                >
+                                  {other?.avatar_url ? (
+                                    <img
+                                      src={other.avatar_url}
+                                      alt=""
+                                      className="size-9 rounded-full object-cover"
+                                    />
+                                  ) : (
+                                    <div className="flex size-9 items-center justify-center rounded-full bg-muted text-xs font-medium">
+                                      {(other?.deleted_at ? "S" : (other?.display_name ?? "?"))
+                                        .slice(0, 1)
+                                        .toUpperCase()}
+                                    </div>
+                                  )}
+                                  <div className="min-w-0 flex-1">
+                                    <p
+                                      className={`truncate text-sm ${unread ? "font-semibold" : "font-medium"} ${other?.deleted_at ? "italic text-muted-foreground" : ""}`}
+                                    >
+                                      {other?.deleted_at
+                                        ? "Slettet bruker"
+                                        : (other?.display_name ?? "Ukjent bruker")}
+                                    </p>
+                                    <p
+                                      className={`truncate text-xs ${unread ? "text-foreground" : "text-muted-foreground"}`}
+                                    >
+                                      {c.last_message
+                                        ? `${lastFromMe ? "Du: " : ""}${c.last_message.body}`
+                                        : "Ingen meldinger enda"}
+                                    </p>
+                                  </div>
+                                  {unread && (
+                                    <span
+                                      className="size-2 shrink-0 rounded-full bg-brand"
+                                      aria-label="Ulest"
+                                    />
+                                  )}
+                                  <span className="text-xs text-muted-foreground">
+                                    {formatRelative(c.last_message_at)}
+                                  </span>
+                                </Link>
+                                {(!native || view === "trash") && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="mr-1 size-11 shrink-0"
+                                    aria-label={
+                                      view === "trash"
+                                        ? "Gjenopprett samtale"
+                                        : "Flytt samtale til papirkurven"
+                                    }
+                                    onClick={() =>
+                                      trashMut.mutate({ row: c, restore: view === "trash" })
+                                    }
+                                  >
+                                    {view === "trash" ? (
+                                      <RotateCcw className="size-4" />
+                                    ) : (
+                                      <Trash2 className="size-4" />
+                                    )}
+                                  </Button>
+                                )}
+                              </div>
+                            );
+                            return (
+                              <li key={c.id}>
+                                {native && view === "inbox" ? (
+                                  <SwipeToDeleteRow
+                                    onDelete={() => trashMut.mutate({ row: c, restore: false })}
+                                    deleteLabel="Slett"
+                                  >
+                                    {row}
+                                  </SwipeToDeleteRow>
+                                ) : (
+                                  row
+                                )}
+                              </li>
+                            );
+                          })}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+const PUSH_HINT_DISMISS_KEY = "kaupet_push_msg_hint_dismissed_v1";
+
+function PushHintForMessages() {
+  const push = usePushStatus();
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(PUSH_HINT_DISMISS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [busy, setBusy] = useState(false);
+
+  if (push.loading || push.messagesActive || dismissed) return null;
+  // Hide silently when the env doesn't support push (e.g. an embedded iframe)
+  if (!push.supported) return null;
+
+  const enable = async () => {
+    setBusy(true);
+    try {
+      await push.enableOnThisDevice("messages");
+      showSuccessToast("Push-varsler er aktivert på denne enheten");
+    } catch (e) {
+      showErrorToast(formatErrorMessage(e, "Klarte ikke å aktivere varsler"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = () => {
+    try {
+      localStorage.setItem(PUSH_HINT_DISMISS_KEY, "1");
+    } catch {
+      /* ignore */
+    }
+    setDismissed(true);
+  };
+
+  return (
+    <div className="mt-6 flex gap-3 rounded-xl border border-border bg-card p-4">
+      <BellRing className="mt-0.5 size-5 shrink-0 text-primary" />
+      <div className="flex-1 space-y-2 text-sm">
+        {push.permission === "denied" ? (
+          <>
+            <p className="font-medium">Push-varsler er blokkert</p>
+            <p className="text-muted-foreground">
+              Du har blokkert varsler for {SITE_NAME}. Endre tillatelsen i nettleserinnstillingene
+              for å få varsel om nye meldinger.
+            </p>
+          </>
+        ) : !push.subscribedHere ? (
+          <>
+            <p className="font-medium">Få varsel om nye meldinger</p>
+            <p className="text-muted-foreground">
+              Push-varsler er ikke aktivert på denne enheten. Du vil ikke få varsel når {SITE_NAME}{" "}
+              er lukket.
+            </p>
+            <Button size="sm" onClick={enable} disabled={busy}>
+              {busy && <Loader2 className="size-4 animate-spin" />}
+              Aktiver push-varsler
+            </Button>
+          </>
+        ) : (
+          <>
+            <p className="font-medium">Push-varsler for meldinger er av</p>
+            <p className="text-muted-foreground">
+              Slå på for å få varsel om nye meldinger på denne enheten.
+            </p>
+            <Button size="sm" onClick={enable} disabled={busy}>
+              {busy && <Loader2 className="size-4 animate-spin" />}
+              Slå på for meldinger
+            </Button>
+          </>
+        )}
+        <p>
+          <Link
+            to="/profil"
+            search={{ tab: "varslinger" } as never}
+            className="text-xs underline underline-offset-2 text-muted-foreground"
+          >
+            Administrer varsler
+          </Link>
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={dismiss}
+        className="rounded p-1 text-muted-foreground hover:bg-muted"
+        aria-label="Skjul melding"
+      >
+        <X className="size-4" />
+      </button>
+    </div>
+  );
+}
+
+/** En samtale kjøperen bare har åpnet (ingen meldinger ennå) vises ikke for
+ * selgeren. */
+function hideUnstartedForCounterpart(rows: ConversationRow[], myId: string): ConversationRow[] {
+  return rows.filter((c) => c.last_message || c.buyer_id === myId);
+}
+
+async function attachLastMessage(
+  convs: Omit<ConversationRow, "last_message">[],
+): Promise<ConversationRow[]> {
+  if (convs.length === 0) return [];
+  const messages = await lastConversationMessages(convs.map((c) => c.id));
+  const lastByConv = new Map(
+    [...messages].map(([id, message]) => [
+      id,
+      {
+        body: messagePreview(message),
+        created_at: message.created_at,
+        sender_id: message.sender_id,
+      },
+    ]),
+  );
+  return convs.map((c) => ({ ...c, last_message: lastByConv.get(c.id) ?? null }));
+}
+
+function formatRelative(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const diffMs = now.getTime() - d.getTime();
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return "nå";
+  if (min < 60) return `${min} min`;
+  const hours = Math.floor(min / 60);
+  if (hours < 24) return `${hours} t`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} d`;
+  return formatDayMonth(iso);
+}

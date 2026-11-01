@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import { containsImageMetadata, isAiGeneratedImage } from "./image-metadata";
+
+// Minimal JPEG byte sequences — enough to exercise the marker search without
+// needing a real, fully-formed JPEG file.
+const SOI = [0xff, 0xd8];
+const EOI = [0xff, 0xd9];
+
+function bytes(...parts: number[][]): Uint8Array {
+  return new Uint8Array(parts.flat());
+}
+
+function ascii(text: string): number[] {
+  return Array.from(text, (char) => char.charCodeAt(0));
+}
+
+describe("containsImageMetadata", () => {
+  it("detects a JPEG APP1 Exif segment", () => {
+    // FF E1 <len> "Exif\0\0" <payload>
+    const app1 = [0xff, 0xe1, 0x00, 0x08, ...ascii("Exif"), 0x00, 0x00];
+    const jpeg = bytes(SOI, app1, EOI);
+
+    expect(containsImageMetadata(jpeg)).toBe(true);
+  });
+
+  it("returns false for a JPEG with no APP1/XMP markers", () => {
+    const jpeg = bytes(SOI, [0xff, 0xdb, 0x00, 0x03, 0x00, ...ascii("data")], EOI);
+
+    expect(containsImageMetadata(jpeg)).toBe(false);
+  });
+});
+
+describe("isAiGeneratedImage", () => {
+  const iptc = "http://cv.iptc.org/newscodes/digitalsourcetype/";
+  const blob = (...parts: number[][]) => new Blob([new Uint8Array(parts.flat())]);
+
+  it("detects trained and composite AI source types", async () => {
+    for (const type of ["trainedAlgorithmicMedia", "compositeWithTrainedAlgorithmicMedia"]) {
+      const file = blob(SOI, ascii("jumb c2pa " + iptc + type), EOI);
+      expect(await isAiGeneratedImage(file)).toBe(true);
+    }
+  });
+
+  it("ignores camera captures and images without metadata", async () => {
+    expect(await isAiGeneratedImage(blob(SOI, ascii(iptc + "digitalCapture"), EOI))).toBe(false);
+    expect(await isAiGeneratedImage(blob(SOI, EOI))).toBe(false);
+  });
+
+  it("finds a marker that crosses a 1 MiB read boundary", async () => {
+    const marker = ascii(iptc + "trainedAlgorithmicMedia");
+    const padding = new Array(1024 * 1024 - 20).fill(0x20);
+    expect(await isAiGeneratedImage(blob(SOI, padding, marker, EOI))).toBe(true);
+    expect(await isAiGeneratedImage(blob(SOI, padding, padding, marker, EOI))).toBe(true);
+  });
+});
