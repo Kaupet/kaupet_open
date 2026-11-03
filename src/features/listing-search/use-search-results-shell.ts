@@ -247,8 +247,6 @@ export function useSearchResultsShell({
     cover_path: l.cover_path,
     category_slug: l.category_slug,
     attributes: l.attributes,
-    mileage_km: l.mileage_km,
-    engine_hours: l.engine_hours,
     sold_at: l.sold_at,
     reserved_until: reservedIds?.get(l.id) ?? null,
   }));

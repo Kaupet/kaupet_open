@@ -1,11 +1,8 @@
 import { describeAttrValue } from "@/features/listing-search/filters/active-filters";
 import type { LocationValue } from "@/components/location-filter";
 import type { TermGroup } from "@/lib/term-groups";
-import {
-  PART_FITMENT_MODEL_IDS_KEY,
-  type AttributeFilterValue,
-  type CategoryFilter,
-} from "@/lib/category-filters";
+import { type AttributeFilterValue, type CategoryFilter } from "@/lib/category-filters";
+import { verticals } from "@/lib/verticals";
 
 type SearchLike = {
   q: string;
@@ -87,8 +84,8 @@ export function buildActiveFilterItems(params: {
         items.push({
           key: `${key}:${v}`,
           label:
-            key === PART_FITMENT_MODEL_IDS_KEY
-              ? `${filter.label_nb}: valgt kjøretøymodell`
+            key === verticals.compoundAttribute?.searchKey
+              ? `${filter.label_nb}: ${verticals.compoundAttribute.searchValueLabel}`
               : `${filter.label_nb}: ${opt?.label_nb ?? v}`,
           onRemove: () => onRemoveAttr?.(key, v),
         });

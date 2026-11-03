@@ -25,31 +25,72 @@ const clientErrorRule = {
     "Forventede brukerfeil skal kastes som new ClientError(melding, status) (400/401/403/404/409/429); uventede feil via toClientError(). Se src/lib/to-client-error.ts.",
 };
 
-const vehicleImportRegex = "(vehicle|360)(?!.*/register$)";
+const vehicleImportRegex = "(vehicle|360|boat)(?!.*/register$)";
 const vehicleImportMessage =
-  "Kjernen skal ikke importere kjøretøymodulen. Utvid et registreringspunkt i src/lib/verticals.ts (eller CategoryBehavior) og registrer kjøretøyet fra src/lib/vehicle/register.ts.";
+  "Kjernen skal ikke importere kjøretøy- eller båtmodulen. Utvid et registreringspunkt i src/lib/verticals.ts (eller CategoryBehavior) og registrer vertikalen fra src/lib/vehicle/register.ts eller src/lib/boat/register.ts.";
 
 // Dynamisk import() er ikke dekket av no-restricted-imports. esquery krever
 // at «/» i et regex-uttrykk escapes.
-// Kjernen nevner ikke kjøretøy: ingen identifikatorer med «vehicle», ingen
-// feltgruppenøkler som «vehicle-facts» og ingen av de gamle filtertypene
-// brand_select/model_select (nå parent_select/child_select). Det kjernen
-// trenger å vite, står som flagg på registreringspunktene.
+// Kjernen nevner ikke kjøretøy eller båt: ingen identifikatorer med
+// «vehicle» eller «boat», ingen feltgruppenøkler som «vehicle-facts» eller
+// «boat-facts» og ingen av de gamle filtertypene
+// brand_select/model_select (nå parent_select/child_select), ingen
+// omregistreringsavgift (Verticals.buyerFee) og ingen delpassform for
+// bildeler (Verticals.compoundAttribute). Det kjernen trenger å vite, står
+// som flagg på registreringspunktene.
 const verticalTermMessage =
-  "Kjernen skal ikke kjenne kjøretøy. Bruk et registreringspunkt i src/lib/verticals.ts (f.eks. flaggene på VerticalFieldGroup, VerticalFlow eller CategoryBehavior) og registrer verdien fra src/lib/vehicle/register.ts.";
+  "Kjernen skal ikke kjenne kjøretøy eller båt. Bruk et registreringspunkt i src/lib/verticals.ts (f.eks. flaggene på VerticalFieldGroup, VerticalFlow eller CategoryBehavior) og registrer verdien fra src/lib/vehicle/register.ts eller src/lib/boat/register.ts.";
 const vehicleTermRules = [
   { selector: "Identifier[name=/vehicle/i]", message: verticalTermMessage },
+  // Ikke /boat/i: ikonet Sailboat er generisk. Attributtnøkkelen boat_type
+  // fanges av partKeyTermRule, som tillater den som testdata.
+  { selector: "Identifier[name=/^boat(?!_)|Boat|BOAT/]", message: verticalTermMessage },
   {
     selector:
       ":matches(Literal[value=/^(brand|model)_select$/], Identifier[name=/^(brand|model)_select$/])",
     message: verticalTermMessage,
   },
-  { selector: "Literal[value=/^vehicle-/]", message: verticalTermMessage },
+  { selector: "Literal[value=/^(vehicle|boat)-/]", message: verticalTermMessage },
+  {
+    selector: "Identifier[name=/PartFitment|partFitment|PART_FITMENT/]",
+    message: verticalTermMessage,
+  },
 ];
+// Kjernetester som kjører med kjøretøyet registrert (og hoppes over i
+// kaupet_open), bruker attributtnøklene, så denne gjelder ikke tester.
+const feeTermRule = {
+  selector:
+    ":matches(Identifier[name=/omregistrering/i], Literal[value=/omregistrering/i], TemplateElement[value.raw=/omregistrering/i])",
+  message: verticalTermMessage,
+};
+// Vertikalenes attributtnøkler: delpassformen (part_fitment_*, part_number,
+// part_brand), karosseriet (body_type, Verticals.searchMultiselectFilterKeys),
+// bruksmålet på annonsekortet (mileage_km, engine_hours,
+// Verticals.cardUsageKeys), båtkategorien (boat_type,
+// Verticals.filterCategoryBehaviors), tallfeltene i
+// Verticals.numericFilterBounds/numericDigitCaps og kjøretøyfeltene i
+// VerticalFieldGroup.reviewFields. Generelle annonsebegreper som year,
+// brand, model, fuel_type (også grill) og color står i kjernen. Som
+// feeTermRule gjelder den ikke tester, som bruker nøklene som data.
+const verticalKeyPattern =
+  "^(part_(fitment|number|brand)|body_type|mileage_km|engine_hours|boat_type|length_ft|power_hk|max_speed_knots|hestekrefter|effekt_hk|engine_size_ccm|vekt_kg|rim_diameter|drive_type|axle_config)";
+const partKeyTermRule = {
+  selector:
+    ":matches(Identifier, Literal, TemplateElement)" +
+    `:matches([name=/${verticalKeyPattern}/], [value=/${verticalKeyPattern}/], [value.raw=/${verticalKeyPattern}/])`,
+  message: verticalTermMessage,
+};
 
 const vehicleDynamicImportRule = {
   selector: `ImportExpression[source.value=/${vehicleImportRegex.replaceAll("/", "\\/")}/]`,
   message: vehicleImportMessage,
+};
+// En beregnet sti (variabel, malstreng) kan ikke sjekkes mot regexen over, så
+// kjernen bruker bare import() med fast sti.
+const computedImportRule = {
+  selector: "ImportExpression[source.type!='Literal']",
+  message:
+    "Kjernen bruker bare import() med fast sti, så ESLint kan sjekke at den ikke laster kjøretøymodulen.",
 };
 
 const serverOnlyPath = {
@@ -229,6 +270,23 @@ export default tseslint.config(
         "error",
         getMutationRule,
         vehicleDynamicImportRule,
+        computedImportRule,
+        ...vehicleTermRules,
+        feeTermRule,
+        partKeyTermRule,
+      ],
+    },
+  },
+  {
+    // Som blokken over, men uten feeTermRule og partKeyTermRule for tester.
+    files: testFiles.map((glob) => `src/${glob}`),
+    ignores: notInOpenAsIs,
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        getMutationRule,
+        vehicleDynamicImportRule,
+        computedImportRule,
         ...vehicleTermRules,
       ],
     },
@@ -242,7 +300,10 @@ export default tseslint.config(
         getMutationRule,
         clientErrorRule,
         vehicleDynamicImportRule,
+        computedImportRule,
         ...vehicleTermRules,
+        feeTermRule,
+        partKeyTermRule,
       ],
     },
   },

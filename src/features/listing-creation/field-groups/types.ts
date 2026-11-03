@@ -149,14 +149,15 @@ export type WizardSharedProps = WizardVerticalProps & {
   attributes: AttributeMap;
   onAttributesChange: (next: AttributeMap) => void;
   attributesTouched: boolean;
-  /** True when the boat-specific facts group owns category attributes. */
-  boatFactsActive: boolean;
-  /** category_filters keys a vertical's own steps (or boat-facts) already
+  /** A vertical group in the flow owns the category attributes and the
+   * description (VerticalFieldGroup.ownsCategoryAttributes). */
+  attributesOwnedByGroup: boolean;
+  /** category_filters keys a vertical's own steps already
    * capture — hidden from category-attributes so the user isn't asked twice. */
   hiddenAttributeKeys: readonly string[] | undefined;
   /** Field-level error from the current step's `validateExtra`, set when the
    * user tried to advance and failed a non-RHF-registered field check (e.g.
-   * `mileage_km`, `brand`/`model`, `known_issues`). Cleared on the next
+   * `brand`/`model`, `known_issues`). Cleared on the next
    * validation attempt. Field groups compare `extraFieldError?.field` to
    * show an inline message next to the offending input. */
   extraFieldError: { field: string; message: string } | null;

@@ -14,8 +14,6 @@ const rows = [
     is_free: false,
     lat: 59,
     lng: 10,
-    mileage_km: 85000,
-    engine_hours: 123,
     sold_at: "2026-10-02T12:00:00Z",
   },
   { id: "active", price_nok: 0, is_free: true, lat: 59, lng: 10, sold_at: null },
@@ -86,7 +84,6 @@ it.skipIf(EDITION === "open").each([
     }),
   );
   expect(result.current.mapListings[0].price_nok).toBe(price);
-  expect(result.current.cards[0]).toMatchObject({ mileage_km: 85000, engine_hours: 123 });
 });
 
 it.each([

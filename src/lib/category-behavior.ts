@@ -1,4 +1,3 @@
-import { boatCategoryBehavior } from "@/lib/boat-category-behavior";
 import { capitalizeWord } from "@/lib/utils";
 import { verticals } from "@/lib/verticals";
 import type { AttributeFilterValue, CategoryFilter, DateAttribute } from "@/lib/category-filters";
@@ -49,7 +48,7 @@ export function defaultAttributeReviewGroupKey(pages: ComposerPage[]) {
 }
 
 export type CategoryBehavior = {
-  /** Whether the listing must declare a delivery method (pickup/ship/both). Bil/MC and Båt opt out. */
+  /** Whether the listing must declare a delivery method (pickup/ship/both). Vertikalene kan velge det bort. */
   requiresDeliveryMethod: boolean;
   /** Whether the generic category-attributes field group should render. False for vehicles, whose attributes are captured via the vehicle-* field groups instead. */
   showGenericAttributes: boolean;
@@ -57,6 +56,9 @@ export type CategoryBehavior = {
   requiresCategoryFilterValues: boolean;
   /** Filter keys excluded from the required-attribute contract for this category behavior. */
   requiredFilterExclusions: readonly string[];
+  /** Filtre vertikalens egne steg setter (eller lar stå tomme), og som
+   * getMissingRequiredFilters derfor aldri krever som vanlige attributter. */
+  flowManagedFilterKeys: readonly string[];
   /** Attributter uten filterrad som lagres som ISO-dato og valideres som det
    * (filtre av typen `date` dekkes allerede av filtertypen). */
   extraDateAttributes: readonly DateAttribute[];
@@ -106,6 +108,7 @@ const DEFAULT_BEHAVIOR: CategoryBehavior = {
   showGenericAttributes: true,
   requiresCategoryFilterValues: true,
   requiredFilterExclusions: [],
+  flowManagedFilterKeys: [],
   extraDateAttributes: [],
   legacyFilterAliases: [],
   attributeReviewGroupKey: defaultAttributeReviewGroupKey,
@@ -138,19 +141,20 @@ const DEFAULT_BEHAVIOR: CategoryBehavior = {
   },
 };
 
-// Beregnes én gang slik at like kall returnerer samme objektidentitet.
-const FALLBACK_BOAT_BEHAVIOR = boatCategoryBehavior(DEFAULT_BEHAVIOR);
+/** Den generiske oppførselen, som vertikalene bygger sin egen på. */
+export const GENERIC_CATEGORY_BEHAVIOR: CategoryBehavior = DEFAULT_BEHAVIOR;
 
 /**
  * Resolves category behavior. `verticalGroup` is the category's value group
  * (valueGroupFor); when set, the registered vertical's behavior applies
- * (src/lib/verticals.ts). Without a registered vertical (kaupet_open) the
- * generic or boat behavior applies.
+ * (src/lib/verticals.ts). Otherwise `filterBehavior`
+ * (filterCategoryBehavior) applies, else the generic behavior. Without a
+ * registered vertical (kaupet_open) the generic behavior always applies.
  */
 export function getCategoryBehavior(
   verticalGroup: string | null,
-  isBoat = false,
+  filterBehavior: CategoryBehavior | null = null,
 ): CategoryBehavior {
   if (verticalGroup && verticals.categoryBehavior) return verticals.categoryBehavior;
-  return isBoat ? FALLBACK_BOAT_BEHAVIOR : DEFAULT_BEHAVIOR;
+  return filterBehavior ?? DEFAULT_BEHAVIOR;
 }

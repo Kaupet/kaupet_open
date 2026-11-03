@@ -29,7 +29,6 @@ const LISTING_TASK_BY_FIELD_GROUP_KEY: Partial<Record<string, ListingTask>> = {
   title: "showcase",
   "category-attributes": "searchable",
   "description-keywords": "searchable",
-  "boat-facts": "searchable",
   condition: "trade",
   price: "trade",
   delivery: "trade",

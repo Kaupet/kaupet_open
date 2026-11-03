@@ -4,9 +4,10 @@ import type { ReactNode } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ListingCard } from "./listing-card";
-import { PART_FITMENT_MODEL_IDS_KEY } from "@/lib/category-filters";
 import type { ListingCardData } from "@/lib/listing-card-data";
 import "@/lib/vehicle/register";
+import "@/lib/boat/register";
+import { verticals } from "@/lib/verticals";
 import { EDITION } from "@/lib/edition";
 import { ListingCardExpanded } from "./listing-card-expanded";
 import { ListingCardImages } from "./listing-card-images";
@@ -48,17 +49,24 @@ const listing: ListingCardData = {
   cover_path: null,
   total_views: 9_876,
   views_last_week: 123,
-  mileage_km: 85_000,
+  attributes: { distance: 85_000 },
 };
 
 describe("offentlige annonsekort", () => {
   it("bevarer annonsemetadata uten å vise selgerens visningstall", () => {
-    render(
-      <>
-        <ListingCard listing={listing} />
-        <ListingCardExpanded listing={listing} />
-      </>,
-    );
+    const registered = verticals.cardUsageKeys;
+    // Et falskt bruksmål, så testen også kjører uten kjøretøyet (kaupet_open).
+    verticals.cardUsageKeys = [{ key: "distance", unit: "km" }];
+    try {
+      render(
+        <>
+          <ListingCard listing={listing} />
+          <ListingCardExpanded listing={listing} />
+        </>,
+      );
+    } finally {
+      verticals.cardUsageKeys = registered;
+    }
 
     expect(screen.getAllByText("Volvo V90")).toHaveLength(2);
     expect(screen.getAllByText("250 000 kr")).toHaveLength(2);
@@ -68,20 +76,19 @@ describe("offentlige annonsekort", () => {
     expect(screen.queryByText(/siste syv dager/)).toBeNull();
   });
 
-  it("viser at selgeroppgitt bildelkompatibilitet", () => {
-    render(
-      <ListingCard
-        listing={{
-          ...listing,
-          attributes: {
-            part_fitment_scope: "specific",
-            [PART_FITMENT_MODEL_IDS_KEY]: ["model-1"],
-          },
-        }}
-      />,
-    );
-
-    expect(screen.getByText("Selger oppgir 1 kompatibel bilmodell")).toBeTruthy();
+  it("viser linjen fra vertikalens sammensatte attributt", () => {
+    const registered = verticals.compoundAttribute;
+    // Et falskt attributt, så testen også kjører uten kjøretøyet (kaupet_open).
+    verticals.compoundAttribute = {
+      ...registered!,
+      cardLabel: (attributes) => (attributes?.fit ? "Passer til alt" : null),
+    };
+    try {
+      render(<ListingCard listing={{ ...listing, attributes: { fit: true } }} />);
+      expect(screen.getByText("Passer til alt")).toBeTruthy();
+    } finally {
+      verticals.compoundAttribute = registered;
+    }
   });
 
   it("viser Solgt-merke og Solgt som pris for nylig solgte annonser", () => {
@@ -122,6 +129,28 @@ it.skipIf(EDITION === "open")("utvidet kort viser manuelt oppgitte kjøretøyfak
   for (const value of ["Bensin", "Manuell", "99 hk", "5 seter", "Rød"]) {
     expect(await screen.findByText(value)).toBeTruthy();
   }
+});
+
+// Kjøretøy og båt finnes ikke i kaupet_open.
+it.skipIf(EDITION === "open")("viser kilometerstand og motortimer fra vertikalene", () => {
+  render(
+    <>
+      <ListingCard listing={{ ...listing, attributes: { mileage_km: 12_000 } }} />
+      <ListingCard listing={{ ...listing, attributes: { engine_hours: 450 } }} />
+    </>,
+  );
+  expect(screen.getByText("12 000 km")).toBeTruthy();
+  expect(screen.getByText("450 t")).toBeTruthy();
+});
+
+it.skipIf(EDITION === "open")("utvidet kort viser båtfakta", async () => {
+  render(
+    <ListingCardExpanded
+      listing={{ ...listing, attributes: { boat_type: "rib", length_ft: 17 } }}
+    />,
+  );
+  expect(await screen.findByText("RIB")).toBeTruthy();
+  expect(await screen.findByText("17 fot")).toBeTruthy();
 });
 
 it.each([false, true])(

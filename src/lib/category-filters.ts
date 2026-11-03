@@ -1,6 +1,7 @@
 import { format, isValid, parse } from "date-fns";
 import { z } from "zod";
-import { getCategoryBehavior } from "@/lib/category-behavior";
+import { getCategoryBehavior, type CategoryBehavior } from "@/lib/category-behavior";
+import { normalizeCompoundAttributes, verticals } from "@/lib/verticals";
 import { parseNumericString } from "@/lib/numeric-string";
 
 export { parseNumericString };
@@ -16,14 +17,6 @@ export const attributesSchema = z.record(
   }),
 );
 
-/** Attributes stored on bildelannonser for seller-declared fitment. */
-export const PART_FITMENT_SCOPE_KEY = "part_fitment_scope";
-export const PART_FITMENT_MODEL_IDS_KEY = "part_fitment_vehicle_ids";
-export const PART_FITMENT_YEAR_KEY = "part_fitment_year";
-export const PART_FITMENT_YEAR_FROM_KEY = "part_fitment_year_from";
-export const PART_FITMENT_YEAR_TO_KEY = "part_fitment_year_to";
-export const PART_NUMBER_KEY = "part_number";
-export const PART_BRAND_KEY = "part_brand";
 export type FilterType =
   | "select"
   | "multiselect"
@@ -42,25 +35,29 @@ export type FilterType =
 export type FilterOption = { value: string; label_nb: string };
 
 /** `category_filters` keys of type `"select"` where a listing carries one
- * value (a car has one body style/color/fuel type) but a buyer searching
+ * value (a car has one color/fuel type) but a buyer searching
  * should still be able to check several allowed values at once — rendered
  * as a checkbox list in the search UI (attribute-filter-chips.tsx,
  * category-filter-fields.tsx) while attribute-fields.tsx (listing creation)
  * keeps rendering the same `type: "select"` row as a single-value dropdown,
  * since that form is unaffected by this key list. */
-export const SEARCH_MULTISELECT_KEYS: readonly string[] = ["body_type", "color", "fuel_type"];
+const SEARCH_MULTISELECT_KEYS: readonly string[] = ["color", "fuel_type"];
+
+/** SEARCH_MULTISELECT_KEYS og vertikalens searchMultiselectFilterKeys. */
+export function isSearchMultiselectKey(key: string): boolean {
+  return (
+    SEARCH_MULTISELECT_KEYS.includes(key) ||
+    (verticals.searchMultiselectFilterKeys ?? []).includes(key)
+  );
+}
 
 /** Max digits allowed in the creation-flow input for numeric attribute keys
- * with a naturally bounded magnitude (a year has 4 digits, a boat length 3).
- * Keys not listed are unrestricted. Enforced by AttributeFields' number
- * input; keyed by category_filters.key so it applies across categories. */
+ * with a naturally bounded magnitude (a year has 4 digits). Keys not listed
+ * (here or in Verticals.numericDigitCaps) are unrestricted. Enforced by
+ * AttributeFields' number input via numericDigitCap; keyed by
+ * category_filters.key so it applies across categories. */
 export const NUMERIC_DIGIT_CAPS: Record<string, number> = {
   year: 4,
-  length_ft: 3,
-  engine_hours: 8,
-  power_hk: 4,
-  hestekrefter: 4,
-  max_speed_knots: 3,
   sleeping_places: 2,
   seats: 3,
   width_cm: 4,
@@ -69,6 +66,11 @@ export const NUMERIC_DIGIT_CAPS: Record<string, number> = {
   length_cm: 4,
   weight_kg: 7,
 };
+
+/** Se NUMERIC_DIGIT_CAPS. */
+export function numericDigitCap(key: string): number | undefined {
+  return NUMERIC_DIGIT_CAPS[key] ?? verticals.numericDigitCaps?.[key];
+}
 
 /** Dimension values describe a physical size and must be greater than zero. */
 export const POSITIVE_NUMERIC_ATTRIBUTE_KEYS: readonly string[] = [
@@ -81,17 +83,6 @@ export const POSITIVE_NUMERIC_ATTRIBUTE_KEYS: readonly string[] = [
 /** Navnet på en verdigruppe for `parent_select`, lagret i filterets `unit`.
  * Kjernen kjenner ikke gruppene; vertikalen som leverer verdilistene gjør det. */
 export type ValueGroup = string;
-
-/** Eldre navn på filtertypene, som databasen kan ha til migrasjonen
- * 20261026130000_category_filter_parent_child_select_finalize.sql er
- * anvendt. Kan fjernes da. */
-/* eslint-disable no-restricted-syntax -- Unntak fra kjøretøysperren:
-   databasens gamle verdier må kunne leses til migrasjonen er anvendt. */
-const LEGACY_FILTER_TYPES: Record<string, FilterType> = {
-  brand_select: "parent_select",
-  model_select: "child_select",
-};
-/* eslint-enable no-restricted-syntax */
 
 export type CategoryFilter = {
   id: string;
@@ -149,7 +140,7 @@ export function normalizeFilter(row: {
     category_id: row.category_id,
     key: row.key,
     label_nb: row.label_nb,
-    type: LEGACY_FILTER_TYPES[row.type] ?? (row.type as FilterType),
+    type: row.type as FilterType,
     unit: row.unit,
     options: Array.isArray(row.options) ? (row.options as FilterOption[]) : null,
     sort_order: row.sort_order,
@@ -495,7 +486,7 @@ export function getMissingRequiredFilters(
   const excluded = excludeKeys ? new Set(excludeKeys) : null;
   const effective = effectiveFiltersForCategory(categoryId, allFilters, categoriesById);
   const behavior = getCategoryBehavior(valueGroupOf(effective));
-  attributes = { ...attributes };
+  attributes = { ...normalizeCompoundAttributes(attributes, effective) };
   for (const alias of behavior.legacyFilterAliases) {
     if (attributes[alias.replacementKey] == null && attributes[alias.key] === alias.value) {
       attributes[alias.replacementKey] = alias.replacementValue;
@@ -509,16 +500,14 @@ export function getMissingRequiredFilters(
   );
   const hasAlternatives = (key: string) => alternatives.some((a) => a.depends_on_key === key);
   const filters = effective.filter(
-    // "range" is search-only, and "registration_number" is set by the
-    // vehicle wizard itself (SVV lookup, or left unset for a manually
-    // entered unregistered vehicle) rather than filled in by the user as a
-    // generic attribute. "boolean" is included — it's rendered as an
+    // "range" is search-only, and the vertical's own steps set its
+    // flowManagedFilterKeys. "boolean" is included — it's rendered as an
     // explicit Ja/Nei choice (see AttributeField), so `false` is a real
     // answer distinguishable from unanswered (`undefined`).
     (f) =>
       f.type !== "range" &&
       !f.is_optional &&
-      f.key !== "registration_number" &&
+      !behavior.flowManagedFilterKeys.includes(f.key) &&
       !excluded?.has(f.key) &&
       !answeredByAlternative.has(f.key) &&
       filterDependencyMet(f, attributes),
@@ -620,17 +609,22 @@ export function genericBrandFilterFor(
     filters.find((f) => f.key === "brand" && (f.type === "text" || f.type === "select")) ?? null
   );
 }
-/** Båt-kategorier arver `boat_type` fra Båter-flyten. Filteret er kategoriens
- * autoritative kilde; lagrede annonseattributter og feltgrupperekkefølge kan
- * være ufullstendige. */
-export function isBoatCategory(
+/** Oppførselen en vertikal har registrert for et filter kategorien har
+ * eller arver (Verticals.filterCategoryBehaviors), eller null. Filteret er
+ * kategoriens autoritative kilde; lagrede annonseattributter og
+ * feltgrupperekkefølge kan være ufullstendige. */
+export function filterCategoryBehavior(
   categoryId: string | null,
   allFilters: CategoryFilter[],
   categoriesById: Map<string, CategoryNode>,
-): boolean {
-  return effectiveFiltersForCategory(categoryId, allFilters, categoriesById).some(
-    (filter) => filter.key === "boat_type",
-  );
+): CategoryBehavior | null {
+  const behaviors = verticals.filterCategoryBehaviors;
+  if (!behaviors || !categoryId) return null;
+  for (const filter of effectiveFiltersForCategory(categoryId, allFilters, categoriesById)) {
+    const behavior = behaviors[filter.key];
+    if (behavior) return behavior;
+  }
+  return null;
 }
 
 /**
@@ -701,12 +695,11 @@ export function applyAttributeFilters<T>(
         q = q.contains("attributes", { [key]: f.value });
         break;
       case "multiselect":
-        // Part fitment is stored as an array of model IDs. The search-side
-        // control intentionally selects one buyer vehicle, so JSONB contains
-        // is the exact predicate needed here; ordinary filters keep their
-        // existing scalar-any behavior.
+        // The vertical's compound attribute is stored as an array
+        // (CompoundAttribute.searchKey), so JSONB contains is the exact
+        // predicate; ordinary filters keep their scalar-any behavior.
         if (f.values.length > 0) {
-          if (key === PART_FITMENT_MODEL_IDS_KEY) {
+          if (key === verticals.compoundAttribute?.searchKey) {
             q = q.contains("attributes", { [key]: f.values });
           } else {
             const ors = f.values.map((v) => `attributes->>${key}.eq.${v}`).join(",");

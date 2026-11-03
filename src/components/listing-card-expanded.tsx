@@ -2,7 +2,6 @@ import { Link } from "@tanstack/react-router";
 import { MapPin } from "lucide-react";
 import { memo, useState } from "react";
 import { ImageGallery } from "@/components/listing-detail/image-gallery";
-import { BoatInfoGrid, isBoatAttributes } from "@/components/listing-detail/boat/boat-info-grid";
 import { SOLD_PRICE_LABEL, SoldBanner, UsageLabel } from "@/components/listing-card";
 import type { ListingCardData } from "@/lib/listing-card-data";
 import { FavoriteButton } from "@/components/favorite-button";
@@ -45,9 +44,7 @@ export const ListingCardExpanded = memo(function ListingCardExpanded({
     verticals.listingCardFacts?.({
       categorySlug: listing.category_slug ?? null,
       attributes,
-      mileageKm: typeof listing.mileage_km === "number" ? listing.mileage_km : null,
     }) ?? null;
-  const isBoatListing = !verticalFacts && isBoatAttributes(attributes);
 
   return (
     <article
@@ -69,11 +66,7 @@ export const ListingCardExpanded = memo(function ListingCardExpanded({
             >
               {priceLabel}
             </p>
-            {typeof listing.mileage_km === "number" ? (
-              <UsageLabel value={listing.mileage_km} unit="km" />
-            ) : typeof listing.engine_hours === "number" ? (
-              <UsageLabel value={listing.engine_hours} unit="t" />
-            ) : null}
+            <UsageLabel attributes={attributes} />
           </div>
           {listing.city && (
             <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
@@ -119,12 +112,7 @@ export const ListingCardExpanded = memo(function ListingCardExpanded({
           state={linkState}
           className="flex flex-col gap-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
-          {(verticalFacts || isBoatListing) && (
-            <div>
-              {verticalFacts}
-              {isBoatListing && <BoatInfoGrid attributes={attributes} />}
-            </div>
-          )}
+          {verticalFacts && <div>{verticalFacts}</div>}
         </Link>
       </div>
       <FavoriteButton

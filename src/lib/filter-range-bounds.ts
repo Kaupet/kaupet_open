@@ -1,5 +1,6 @@
 import { formatNokNumber } from "@/lib/format";
 import type { CategoryFilter } from "@/lib/category-filters";
+import { verticals } from "@/lib/verticals";
 
 /** Slider geometry for a from–to numeric filter. */
 export type RangeBounds = {
@@ -37,17 +38,11 @@ export function priceBoundsForMax(
 }
 
 /** Per-key scales for the numeric attribute filters where a generic 0–100k
- * ramp would be useless (a year slider starting at 0, a mileage slider
- * stepping by 1 km). Keys match category_filters.key. */
+ * ramp would be useless (a year slider starting at 0, a shoe size stepping
+ * by 10). Keys match category_filters.key. Vertikalenes egne nøkler står i
+ * Verticals.numericFilterBounds. */
 const BOUNDS_BY_KEY: Record<string, Omit<RangeBounds, "unit">> = {
   year: { min: 1950, max: currentYear(), step: 1, noGrouping: true },
-  part_fitment_year: { min: 1950, max: currentYear(), step: 1, noGrouping: true },
-  rim_diameter: { min: 10, max: 30, step: 1, noGrouping: true },
-  mileage_km: { min: 0, max: 500_000, step: 1000 },
-  hestekrefter: { min: 0, max: 1000, step: 5 },
-  effekt_hk: { min: 0, max: 1000, step: 5 },
-  engine_size_ccm: { min: 0, max: 3000, step: 50 },
-  vekt_kg: { min: 0, max: 5000, step: 50 },
   // Uten disse faller feltene til DEFAULT_BOUNDS (0–10 000) og gir sliders
   // ingen kan bruke — en sykkelramme på 10 000 cm, skostørrelse 7 500.
   frame_size_cm: { min: 30, max: 75, step: 1, noGrouping: true },
@@ -57,7 +52,6 @@ const BOUNDS_BY_KEY: Record<string, Omit<RangeBounds, "unit">> = {
   age_months: { min: 0, max: 96, step: 1, noGrouping: true },
   tent_capacity: { min: 1, max: 12, step: 1, noGrouping: true },
   sleeping_places: { min: 0, max: 12, step: 1, noGrouping: true },
-  max_speed_knots: { min: 0, max: 100, step: 1, noGrouping: true },
 };
 
 /** Bounds for keys we have no explicit scale for, picked from the unit so a
@@ -97,6 +91,9 @@ export function boundsForFilter(
   const base =
     BOUNDS_BY_LABEL[filter.label_nb] ??
     BOUNDS_BY_KEY[filter.key] ??
+    verticals.numericFilterBounds?.[filter.key] ??
+    // Årstall under et annet navn (f.eks. årsmodellen en del passer til).
+    (filter.key.endsWith("_year") ? BOUNDS_BY_KEY.year : undefined) ??
     (filter.unit ? BOUNDS_BY_UNIT[filter.unit] : undefined) ??
     DEFAULT_BOUNDS;
   return { ...base, unit: filter.unit ?? undefined };

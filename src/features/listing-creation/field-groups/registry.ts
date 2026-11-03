@@ -6,7 +6,6 @@ import { CategoryConfirm } from "./category-confirm";
 import { CategoryAttributes } from "./category-attributes";
 import { Condition } from "./condition";
 import { PriceGroup } from "./price";
-import { BoatFactsGroup, BOAT_FACTS_AVAILABLE } from "./boat-facts";
 import { DescriptionKeywordsGroup } from "./description-keywords";
 import { DeliveryGroup, LocationGroup } from "./delivery-location";
 import { ReviewPublishGroup } from "./review-publish";
@@ -22,7 +21,7 @@ import { listingTaskFor, type ListingTask } from "@/features/listing-creation/ca
 export type ValidateCtx = WizardVerticalProps & {
   images: WizardSharedProps["images"];
   attributes: WizardSharedProps["attributes"];
-  boatFactsActive: boolean;
+  attributesOwnedByGroup: boolean;
   missingFilters: { key: string; label_nb: string }[];
   isFree: boolean;
   priceNok: WizardSharedProps["priceNok"];
@@ -79,7 +78,7 @@ export const FIELD_GROUP_REGISTRY: Record<string, FieldGroup> = {
       // Kategorier der vertikalen fanger egenskapene i egne steg, rendrer
       // ingenting her (se CategoryAttributes) og validerer derfor heller
       // ikke noe her.
-      if (!ctx.behavior.showGenericAttributes || ctx.boatFactsActive) return null;
+      if (!ctx.behavior.showGenericAttributes || ctx.attributesOwnedByGroup) return null;
       const firstMissingFilter = ctx.missingFilters[0];
       if (firstMissingFilter) {
         return {
@@ -106,36 +105,6 @@ export const FIELD_GROUP_REGISTRY: Record<string, FieldGroup> = {
         ? { field: "price_nok", message: "Oppgi en pris før annonsen publiseres." }
         : null,
   },
-  ...(BOAT_FACTS_AVAILABLE
-    ? {
-        "boat-facts": {
-          key: "boat-facts",
-          classification: "requiredToPublish",
-          Component: BoatFactsGroup,
-          fieldsToValidate: ["subtitle", "description"],
-          validateExtra: (ctx) => {
-            // Båtens kategoriattributter er frivillige; beskrivelse valideres fortsatt
-            // via fieldsToValidate.
-            if (!ctx.behavior.requiresCategoryFilterValues) return null;
-            // Brand/model and every boat category filter are rendered by boat-facts;
-            // category-attributes remains present in the stored flow but is a
-            // category-picker-only shell for this vertical.
-            const brand = ctx.attributes.brand;
-            if (typeof brand !== "string" || !brand.trim()) {
-              return { field: "brand", message: "Fyll inn merke før du går videre." };
-            }
-            const model = ctx.attributes.model;
-            if (typeof model !== "string" || !model.trim()) {
-              return { field: "model", message: "Fyll inn modell før du går videre." };
-            }
-            if (ctx.missingFilters.length > 0) {
-              return `Fyll inn ${ctx.missingFilters.map((f) => f.label_nb).join(", ")} før du går videre.`;
-            }
-            return null;
-          },
-        },
-      }
-    : {}),
   "description-keywords": {
     key: "description-keywords",
     classification: "requiredToPublish",
@@ -207,7 +176,6 @@ const FIELD_GROUP_LABELS_NB: Record<string, string> = {
   "category-attributes": "Kategoriegenskaper",
   condition: "Tilstand",
   price: "Pris",
-  "boat-facts": "Båt: Merke, modell & undertittel",
   "description-keywords": "Beskrivelse & nøkkelord",
   delivery: "Levering",
   location: "Sted",

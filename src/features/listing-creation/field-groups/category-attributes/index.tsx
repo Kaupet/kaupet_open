@@ -29,7 +29,7 @@ export function CategoryAttributes({
   attributesTouched,
   hiddenAttributeKeys,
   behavior,
-  boatFactsActive,
+  attributesOwnedByGroup,
   photoAttributesAvailable,
   photoAttributeSuggestionLoading,
   requestPhotoAttributeSuggestions,
@@ -126,7 +126,7 @@ export function CategoryAttributes({
         </p>
       )}
 
-      {!boatFactsActive && categoryId && photoAttributesAvailable && (
+      {!attributesOwnedByGroup && categoryId && photoAttributesAvailable && (
         <div className="space-y-2">
           <Button
             type="button"
@@ -163,7 +163,7 @@ export function CategoryAttributes({
         </div>
       )}
 
-      {!boatFactsActive && (
+      {!attributesOwnedByGroup && (
         <AttributeFields
           categoryId={categoryId || null}
           categories={categories ?? []}

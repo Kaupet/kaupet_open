@@ -10,19 +10,20 @@ import {
   todayIsoDate,
   searchFilterDependencyMet,
   getMissingRequiredFilters,
-  isBoatCategory,
+  filterCategoryBehavior,
   normalizeFilter,
   normalizeNumericAttributes,
   findNonNumericAttribute,
   retainSearchAttributes,
   NUMERIC_DIGIT_CAPS,
-  PART_FITMENT_MODEL_IDS_KEY,
   splitPrimaryFilters,
   valueGroupFor,
   type AttributeFilterValue,
   type CategoryFilter,
   type CategoryNode,
 } from "./category-filters";
+import { verticals, type CompoundAttribute } from "./verticals";
+import { getCategoryBehavior } from "./category-behavior";
 
 const cats: CategoryNode[] = [
   { id: "main", parent_id: null },
@@ -91,13 +92,20 @@ describe("effectiveFiltersForCategory", () => {
   });
 });
 
-describe("isBoatCategory", () => {
-  it("identifies a category through its inherited boat_type filter", () => {
-    const filters = [f({ category_id: "main", key: "boat_type" })];
+describe("filterCategoryBehavior", () => {
+  it("finds the behavior a vertical registered for an inherited filter", () => {
+    const filters = [f({ category_id: "main", key: "marker" })];
+    expect(filterCategoryBehavior("sub", filters, byId)).toBeNull();
 
-    expect(isBoatCategory("sub", filters, byId)).toBe(true);
-    expect(isBoatCategory("other", filters, byId)).toBe(false);
-    expect(isBoatCategory(null, filters, byId)).toBe(false);
+    const behavior = { ...getCategoryBehavior(null), requiresDeliveryMethod: false };
+    verticals.filterCategoryBehaviors = { marker: behavior };
+    try {
+      expect(filterCategoryBehavior("sub", filters, byId)).toBe(behavior);
+      expect(filterCategoryBehavior("other", filters, byId)).toBeNull();
+      expect(filterCategoryBehavior(null, filters, byId)).toBeNull();
+    } finally {
+      delete verticals.filterCategoryBehaviors;
+    }
   });
 });
 describe("getMissingRequiredFilters", () => {
@@ -124,6 +132,14 @@ describe("getMissingRequiredFilters", () => {
     ).toEqual([]);
   });
 
+  it("requires a registration_number filter outside a vertical", () => {
+    const filters = [f({ category_id: "sub", key: "registration_number", type: "text" })];
+
+    expect(getMissingRequiredFilters("sub", filters, byId, {}).map((x) => x.key)).toEqual([
+      "registration_number",
+    ]);
+  });
+
   it("does not require an is_optional cm dimension left unset", () => {
     const filters = [
       f({ category_id: "sub", key: "width_cm", type: "number", is_optional: true }),
@@ -135,30 +151,30 @@ describe("getMissingRequiredFilters", () => {
     expect(getMissingRequiredFilters("sub", filters, byId, {})[0].key).toBe("material");
   });
 
-  it("requires compatible models only for a specific-fitment listing", () => {
+  it("requires a dependent list only when its parent has the matching value", () => {
     const filters = [
       f({
         category_id: "main",
-        key: "part_fitment_scope",
+        key: "fit_scope",
         type: "select",
       }),
       f({
         category_id: "main",
-        key: "part_fitment_vehicle_ids",
+        key: "fit_ids",
         type: "multiselect",
-        depends_on_key: "part_fitment_scope",
+        depends_on_key: "fit_scope",
         depends_on_value: "specific",
       }),
     ];
     expect(getMissingRequiredFilters("main", filters, byId, {})).toHaveLength(1);
     expect(
       getMissingRequiredFilters("main", filters, byId, {
-        part_fitment_scope: "specific",
+        fit_scope: "specific",
       }),
     ).toHaveLength(1);
     expect(
       getMissingRequiredFilters("main", filters, byId, {
-        part_fitment_scope: "universal",
+        fit_scope: "universal",
       }),
     ).toEqual([]);
   });
@@ -182,27 +198,6 @@ describe("normalizeFilter", () => {
       { value: "a", label_nb: "A" },
     ]);
   });
-
-  /* eslint-disable no-restricted-syntax -- Unntak fra kjøretøysperren: tester
-     at de gamle verdiene fra databasen (LEGACY_FILTER_TYPES) gjøres om. */
-  it("gir de gamle navnene brand_select/model_select de generiske navnene", () => {
-    const row = {
-      id: "1",
-      category_id: "c",
-      key: "brand",
-      label_nb: "Merke",
-      type: "brand_select",
-      unit: "bil",
-      options: null,
-      sort_order: 0,
-      is_primary: true,
-    };
-    expect(normalizeFilter(row).type).toBe("parent_select");
-    expect(normalizeFilter({ ...row, type: "model_select" }).type).toBe("child_select");
-    expect(normalizeFilter({ ...row, type: "parent_select" }).type).toBe("parent_select");
-    expect(normalizeFilter({ ...row, type: "select" }).type).toBe("select");
-  });
-  /* eslint-enable no-restricted-syntax */
 });
 
 describe("valueGroupFor", () => {
@@ -298,17 +293,62 @@ describe("applyAttributeFilters", () => {
     ]);
   });
 
-  it("matches a part listing's vehicle-model array by containment", () => {
-    const filters: Record<string, AttributeFilterValue> = {
-      [PART_FITMENT_MODEL_IDS_KEY]: { kind: "multiselect", values: ["model-1"] },
-    };
-    const q = applyAttributeFilters(fakeQuery(), filters);
+  it("matches a list-valued scalar filter with any of the values", () => {
+    const q = applyAttributeFilters(fakeQuery(), {
+      fit_ids: { kind: "multiselect", values: ["model-1"] },
+    });
+    expect(q.calls).toEqual([{ method: "or", args: ["attributes->>fit_ids.eq.model-1"] }]);
+  });
+});
+
+/** Et falskt sammensatt attributt, så testene kjører uten kjøretøyet (kaupet_open). */
+const compound: CompoundAttribute = {
+  anchorKey: "fit_scope",
+  searchKey: "fit_ids",
+  keys: ["fit_scope", "fit_ids"],
+  searchValueLabel: "valgt",
+  normalize: (attributes) => {
+    const { old_ids: oldIds, ...rest } = attributes;
+    return oldIds === undefined ? attributes : { ...rest, fit_ids: oldIds };
+  },
+  validate: () => null,
+  cardLabel: () => null,
+  useSearchLabel: () => null,
+  Field: () => null,
+  SearchField: () => null,
+  Summary: () => null,
+};
+
+describe("vertikalens sammensatte attributt", () => {
+  beforeEach(() => {
+    verticals.compoundAttribute = compound;
+  });
+  afterEach(() => {
+    delete verticals.compoundAttribute;
+  });
+
+  it("søker i listen med containment", () => {
+    const q = applyAttributeFilters(fakeQuery(), {
+      fit_ids: { kind: "multiselect", values: ["model-1"] },
+    });
     expect(q.calls).toEqual([
-      {
-        method: "contains",
-        args: ["attributes", { [PART_FITMENT_MODEL_IDS_KEY]: ["model-1"] }],
-      },
+      { method: "contains", args: ["attributes", { fit_ids: ["model-1"] }] },
     ]);
+  });
+
+  it("normaliserer attributtene før påkrevde felt sjekkes, uten å endre dem", () => {
+    const attributes = { fit_scope: "specific", old_ids: ["a"] };
+    const filters = [
+      f({
+        category_id: "main",
+        key: "fit_ids",
+        type: "multiselect",
+        depends_on_key: "fit_scope",
+        depends_on_value: "specific",
+      }),
+    ];
+    expect(getMissingRequiredFilters("main", filters, byId, attributes)).toEqual([]);
+    expect(attributes).toEqual({ fit_scope: "specific", old_ids: ["a"] });
   });
 });
 

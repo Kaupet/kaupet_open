@@ -1,13 +1,10 @@
 import { formatNokNumber } from "@/lib/format";
 import { format } from "date-fns";
 import { SORT_OPTIONS, type SortValue } from "@/lib/categories";
-import {
-  PART_FITMENT_MODEL_IDS_KEY,
-  type AttributeFilterValue,
-  type CategoryFilter,
-} from "@/lib/category-filters";
+import { type AttributeFilterValue, type CategoryFilter } from "@/lib/category-filters";
 import { boundsForFilter } from "@/lib/filter-range-bounds";
 import { parseIsoDate } from "@/lib/iso-date";
+import { verticals } from "@/lib/verticals";
 
 /**
  * Shared label/active-state derivation used by both NativeFilterChips and
@@ -60,7 +57,7 @@ export function getAttributeChipState(
       if (value.values.length === 0) return fallback;
       return {
         label:
-          filter.key === PART_FITMENT_MODEL_IDS_KEY
+          filter.key === verticals.compoundAttribute?.searchKey
             ? `${filter.label_nb} (${value.values.length})`
             : value.values.length === 1
               ? (filter.options?.find((o) => o.value === value.values[0])?.label_nb ??

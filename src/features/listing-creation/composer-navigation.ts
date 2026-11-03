@@ -85,8 +85,6 @@ export function composerFieldId(field: string) {
     maintenance_history: "maintenance_history",
     brand: "brand-field",
     model: "model-field",
-    drive_type: "drive-type-select",
-    axle_config: "axle-config-select",
   };
   return ids[field] ?? (field.startsWith("attr-") ? field : `attr-${field}`);
 }

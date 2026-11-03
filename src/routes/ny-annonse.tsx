@@ -50,7 +50,7 @@ import { getCategoryBehavior } from "@/lib/category-behavior";
 import {
   categoryBreadcrumb,
   getMissingRequiredFilters,
-  isBoatCategory,
+  filterCategoryBehavior,
   valueGroupFor,
   type CategoryNode,
 } from "@/lib/category-filters";
@@ -189,7 +189,6 @@ const PREVIEW_SECTION_BY_GROUP_KEY: Record<string, string> = {
   title: "title",
   price: "price",
   "category-attributes": "facts",
-  "boat-facts": "facts",
   "description-keywords": "description",
   location: "location",
   delivery: "location",
@@ -394,13 +393,13 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     [categoryId, allFilters, categoriesById],
   );
 
-  const boatCategory = useMemo(
-    () => isBoatCategory(categoryId || null, allFilters ?? [], categoriesById),
+  const filterBehavior = useMemo(
+    () => filterCategoryBehavior(categoryId || null, allFilters ?? [], categoriesById),
     [categoryId, allFilters, categoriesById],
   );
   const behavior = useMemo(
-    () => getCategoryBehavior(valueGroup, boatCategory),
-    [valueGroup, boatCategory],
+    () => getCategoryBehavior(valueGroup, filterBehavior),
+    [valueGroup, filterBehavior],
   );
   const missingFilters = useMemo(
     () =>
@@ -473,13 +472,12 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
         .fieldGroups,
     [categoryId, allFlows, categoriesById, landingEntry],
   );
-  const boatFactsActive = baseFieldGroupKeys.includes("boat-facts");
+  const attributesOwnedByGroup = baseFieldGroupKeys.some(
+    (key) => !!verticalFieldGroup(key)?.ownsCategoryAttributes,
+  );
 
   const hiddenAttributeKeys = [
     ...wizardVertical.hiddenAttributeKeys,
-    // Boat brand/model are captured (with autocomplete) by the boat-facts
-    // group — hide them from the generic category-attributes rendering.
-    ...(baseFieldGroupKeys.includes("boat-facts") ? ["brand", "model"] : []),
     // Utstyrsnøklene (Verticals.equipmentFilterKeys) arves nedover i
     // kategoritreet, men fylles bare ut i vertikalens eget utstyrssteg —
     // skjult her uansett, så en kategori uten det steget ikke får dem i de
@@ -640,6 +638,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     p.groups.some((g) => g.key === "category-attributes"),
   );
   const reviewFieldLabels: Record<string, string> = {
+    ...Object.assign({}, ...verticalFieldGroups().map((group) => group.reviewFields)),
     category_id: "Kategori",
     title: "Tittel",
     subtitle: "Undertittel",
@@ -651,10 +650,6 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     can_ship: "Levering",
     brand: "Merke",
     model: "Modell",
-    sleeping_places: "Soveplasser",
-    mileage_km: "Kilometerstand",
-    drive_type: "Hjuldrift",
-    axle_config: "Akselkombinasjon",
     known_issues: "Kjente feil og mangler",
     maintenance_history: "Vedlikeholdshistorikk",
   };
@@ -674,13 +669,11 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     // Vertikalens grupper som oppgir feltet (reviewFields) først.
     const candidates = [
       ...verticalFieldGroups()
-        .filter((group) => group.reviewFields?.includes(field))
+        .filter((group) => group.reviewFields?.[field])
         .map((group) => group.key),
-      ...(field === "brand" || field === "model" || field === "sleeping_places"
-        ? ["boat-facts", "category-attributes"]
-        : field === "postal_code" || field === "city" || field === "can_ship"
-          ? ["location", "delivery"]
-          : ["category-attributes", "description-keywords", "details"]),
+      ...(field === "postal_code" || field === "city" || field === "can_ship"
+        ? ["location", "delivery"]
+        : ["category-attributes", "description-keywords", "details"]),
     ];
     return candidates.find((key) =>
       pages.some((page) => page.groups.some((group) => group.key === key)),
@@ -779,7 +772,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
   const publishingValidationContext = {
     images,
     attributes,
-    boatFactsActive,
+    attributesOwnedByGroup,
     missingFilters,
     isFree,
     priceNok,
@@ -1012,7 +1005,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
   const validateCtx: ValidateCtx = {
     images,
     attributes,
-    boatFactsActive,
+    attributesOwnedByGroup,
     missingFilters,
     isFree,
     priceNok,
@@ -1053,9 +1046,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
       if (
         groups.some(
           (group) =>
-            group.key === "category-attributes" ||
-            group.key === "boat-facts" ||
-            !!verticalFieldGroup(group.key)?.editsAttributes,
+            group.key === "category-attributes" || !!verticalFieldGroup(group.key)?.editsAttributes,
         )
       )
         setAttributesTouched(true);
@@ -1072,7 +1063,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
         return "blocked";
       }
       if (typeof result === "string") {
-        if (group.key === "category-attributes" || group.key === "boat-facts")
+        if (group.key === "category-attributes" || !!verticalFieldGroup(group.key)?.editsAttributes)
           setAttributesTouched(true);
         setValidationError(result);
         setBlockingValidator({ message: result, validate: group.validateExtra! });
@@ -1365,7 +1356,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     attributes,
     onAttributesChange: setAttributes,
     attributesTouched,
-    boatFactsActive,
+    attributesOwnedByGroup,
     hiddenAttributeKeys,
     extraFieldError,
 

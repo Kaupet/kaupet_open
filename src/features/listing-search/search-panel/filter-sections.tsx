@@ -48,7 +48,7 @@ import { emptyTermGroup, type TermGroup } from "@/lib/term-groups";
 import {
   searchFilterDependencyMet,
   splitPrimaryFilters,
-  SEARCH_MULTISELECT_KEYS,
+  isSearchMultiselectKey,
   type AttributeFilterValue,
   type CategoryFilter,
 } from "@/lib/category-filters";
@@ -1077,7 +1077,7 @@ function InlineChoiceFilter({
       </label>
     );
   }
-  const multiple = filter.type === "multiselect" || SEARCH_MULTISELECT_KEYS.includes(filter.key);
+  const multiple = filter.type === "multiselect" || isSearchMultiselectKey(filter.key);
   const selected =
     value?.kind === "multiselect" ? value.values : value?.kind === "select" ? [value.value] : [];
   const toggle = (option: string) => {

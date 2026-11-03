@@ -45,7 +45,11 @@ import type { ListingOrganizationBrand } from "@/components/listing-detail/listi
 import { ProffRelatedListings } from "@/components/listing-detail/proff-listing-presentation";
 import type { ProffOrganizationPresentation } from "@/components/listing-detail/proff-listing-types";
 import { getCategoryBehavior } from "@/lib/category-behavior";
-import { genericBrandFilterFor, isBoatCategory, valueGroupFor } from "@/lib/category-filters";
+import {
+  genericBrandFilterFor,
+  filterCategoryBehavior,
+  valueGroupFor,
+} from "@/lib/category-filters";
 import { useAllCategoryFilters } from "@/components/attribute-fields";
 import { useCategories } from "@/hooks/use-categories";
 import { useListingEditMutations } from "@/features/listing-edit/use-listing-edit-mutations";
@@ -526,9 +530,7 @@ function ListingDetailPage() {
     : null;
   const behavior = getCategoryBehavior(
     valueGroup,
-    data?.category_id
-      ? isBoatCategory(data.category_id, allFilters ?? [], categoriesByIdForBehavior)
-      : false,
+    filterCategoryBehavior(data?.category_id ?? null, allFilters ?? [], categoriesByIdForBehavior),
   );
   const { saveField, fieldStatus } = useListingEditMutations({
     listingId: listingId ?? "",

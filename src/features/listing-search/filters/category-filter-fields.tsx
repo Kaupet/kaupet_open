@@ -14,8 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  PART_FITMENT_MODEL_IDS_KEY,
-  SEARCH_MULTISELECT_KEYS,
+  isSearchMultiselectKey,
   todayIsoDate,
   type AttributeFilterValue,
   type CategoryFilter,
@@ -99,27 +98,21 @@ export function CategoryFilterFields({
     return c == null ? label : `${label} (${c})`;
   };
   const brandModel = verticals.brandModel;
+  const compound = verticals.compoundAttribute;
   return (
     <>
       {filters.map((f) => {
         const current = values[f.key];
 
-        // Merke-, modell- og passformfeltene kommer fra vertikalen (kjøretøy);
-        // uten den finnes ikke tabellene de slår opp i.
-        if (
-          f.key === PART_FITMENT_MODEL_IDS_KEY ||
-          f.type === "parent_select" ||
-          f.type === "child_select"
-        ) {
-          if (!brandModel) return null;
+        // Merke- og modellfeltene kommer fra vertikalen; uten den finnes
+        // ikke tabellene de slår opp i.
+        if (!brandModel && (f.type === "parent_select" || f.type === "child_select")) {
+          return null;
         }
-        if (brandModel && f.key === PART_FITMENT_MODEL_IDS_KEY) {
+        if (compound && f.key === compound.searchKey) {
           return (
             <Suspense key={f.id} fallback={null}>
-              <brandModel.PartFitmentSearchField
-                value={current}
-                onChange={(next) => onChange(f.key, next)}
-              />
+              <compound.SearchField value={current} onChange={(next) => onChange(f.key, next)} />
             </Suspense>
           );
         }
@@ -309,7 +302,7 @@ export function CategoryFilterFields({
             </label>
           );
         }
-        if (f.type === "select" && !SEARCH_MULTISELECT_KEYS.includes(f.key)) {
+        if (f.type === "select" && !isSearchMultiselectKey(f.key)) {
           if (isNative) {
             return (
               <NativeOptionFilter
@@ -347,7 +340,7 @@ export function CategoryFilterFields({
             </div>
           );
         }
-        if (f.type === "multiselect" || SEARCH_MULTISELECT_KEYS.includes(f.key)) {
+        if (f.type === "multiselect" || isSearchMultiselectKey(f.key)) {
           const selected = current?.kind === "multiselect" ? current.values : [];
           if (isNative) {
             return (

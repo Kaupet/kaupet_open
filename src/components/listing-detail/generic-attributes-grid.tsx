@@ -6,28 +6,23 @@ import { useCategories } from "@/hooks/use-categories";
 import {
   effectiveFiltersForCategory,
   filterDependencyMet,
-  PART_FITMENT_SCOPE_KEY,
-  PART_FITMENT_MODEL_IDS_KEY,
-  PART_FITMENT_YEAR_KEY,
-  PART_FITMENT_YEAR_FROM_KEY,
-  PART_FITMENT_YEAR_TO_KEY,
   type AttributeValue,
   type CategoryNode,
 } from "@/lib/category-filters";
-import { equipmentFilterKeys } from "@/lib/verticals";
+import { equipmentFilterKeys, verticals } from "@/lib/verticals";
 
 type Attrs = Record<string, unknown>;
 
 /** Keys with a dedicated display component of their own — leaving them in
- * would render the same data twice. Vertikalens utstyrsnøkler
- * (equipmentFilterKeys) likeså. */
-const RENDERED_ELSEWHERE = new Set<string>([
-  PART_FITMENT_SCOPE_KEY,
-  PART_FITMENT_MODEL_IDS_KEY,
-  PART_FITMENT_YEAR_KEY,
-  PART_FITMENT_YEAR_FROM_KEY,
-  PART_FITMENT_YEAR_TO_KEY,
-]);
+ * would render the same data twice: vertikalens utstyrsnøkler
+ * (equipmentFilterKeys) og nøklene til det sammensatte attributtet
+ * (CompoundAttribute.Summary). */
+function renderedElsewhere(key: string): boolean {
+  return (
+    equipmentFilterKeys().includes(key) ||
+    (verticals.compoundAttribute?.keys.includes(key) ?? false)
+  );
+}
 
 /**
  * Read-only spec grid for generic (non-vehicle, non-boat) category
@@ -64,7 +59,7 @@ export function GenericAttributesGrid({
     if (!filters) return [];
     const values = attributes as Record<string, AttributeValue>;
     return effectiveFiltersForCategory(categoryId, filters, categoriesById)
-      .filter((f) => !RENDERED_ELSEWHERE.has(f.key) && !equipmentFilterKeys().includes(f.key))
+      .filter((f) => !renderedElsewhere(f.key))
       .filter((f) => filterDependencyMet(f, values))
       .map((f) => ({
         key: f.key,

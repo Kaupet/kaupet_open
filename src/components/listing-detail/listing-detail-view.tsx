@@ -13,11 +13,6 @@ import { NativePageHeader } from "@/components/native-page-header";
 import { readLastSearchContext } from "@/lib/last-search-context";
 import { ImageGallery } from "@/components/listing-detail/image-gallery";
 import {
-  BoatExtraInfo,
-  BoatInfoGrid,
-  isBoatAttributes,
-} from "@/components/listing-detail/boat/boat-info-grid";
-import {
   Breadcrumb,
   BreadcrumbItem,
   BreadcrumbLink,
@@ -29,7 +24,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PlaceholderLine } from "@/components/listing-detail/placeholder-line";
 import { CONDITIONS, conditionLabelFor, verticalConditionsFor } from "@/lib/constants";
 import type { ProffOrganizationPresentation } from "@/components/listing-detail/proff-listing-types";
-import { PART_FITMENT_SCOPE_KEY } from "@/lib/category-filters";
 import { verticals, type ListingDetailSections, type Spin360Frame } from "@/lib/verticals";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -284,6 +278,7 @@ export function ListingDetailView({
 
   const vertical =
     verticals.listingDetail?.({
+      categoryId: categoryId ?? null,
       categorySlug: category?.slug ?? null,
       attributes,
       priceNok,
@@ -569,8 +564,7 @@ function ListingDetailViewBody({
   const editCtx = useListingEdit();
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const [pendingCoords, setPendingCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const isBoatListing = !vertical && isBoatAttributes(attributes);
-  const PartFitmentSummary = verticals.brandModel?.PartFitmentSummary;
+  const compound = verticals.compoundAttribute;
   const titleBadge = vertical?.titleBadge ?? null;
   const nativeBadgeUnderTitle = isNative && !!vertical;
   // Profileringen kommer fra organisasjonens lagrede profil og deles med konsollforhåndsvisningen.
@@ -832,27 +826,9 @@ function ListingDetailViewBody({
           )}
           {vertical?.facts}
 
-          {isBoatListing && (
-            <div data-preview-section="facts">
-              {categoryId ? (
-                <EditableRegion
-                  render={() => <BoatInfoGrid attributes={attributes} />}
-                  panel={({ close }) => (
-                    <GenericAttributesPanel
-                      categoryId={categoryId}
-                      attributes={attributes}
-                      onClose={close}
-                    />
-                  )}
-                />
-              ) : (
-                <BoatInfoGrid attributes={attributes} />
-              )}
-            </div>
-          )}
-          {PartFitmentSummary && typeof attributes[PART_FITMENT_SCOPE_KEY] === "string" && (
+          {compound && typeof attributes[compound.anchorKey] === "string" && (
             <Suspense fallback={null}>
-              <PartFitmentSummary attributes={attributes} />
+              <compound.Summary attributes={attributes} />
             </Suspense>
           )}
 
@@ -897,37 +873,18 @@ function ListingDetailViewBody({
             }}
           />
 
-          {!vertical &&
-            isBoatAttributes(attributes) &&
-            (categoryId ? (
-              <EditableRegion
-                render={() => <BoatExtraInfo attributes={attributes} />}
-                panel={({ close }) => (
-                  <GenericAttributesPanel
-                    categoryId={categoryId}
-                    attributes={attributes}
-                    onClose={close}
-                  />
-                )}
-              />
-            ) : (
-              <BoatExtraInfo attributes={attributes} />
-            ))}
-
           {vertical?.afterDescription}
 
           {sellerInColumn && sellerContactSlot && <div className="mt-8">{sellerContactSlot}</div>}
 
           {vertical?.afterSeller}
 
-          {/* Boat attributes already have a direct edit entry point via the
-              BoatInfoGrid/BoatExtraInfo regions above — this fallback only
-              covers non-vehicle, non-boat categories with no dedicated
-              display component of their own. Rendered for everyone, not just
-              in edit mode: these are required fields in the wizard, so
-              hiding them from buyers made the whole step pointless. */}
+          {/* Vertikalene viser og redigerer attributtene i sine egne
+              seksjoner — dette dekker kategorier uten vertikal. Rendered for
+              everyone, not just in edit mode: these are required fields in
+              the wizard, so hiding them from buyers made the whole step
+              pointless. */}
           {!vertical &&
-            !isBoatAttributes(attributes) &&
             categoryId &&
             (editCtx?.editMode ? (
               <EditableRegion

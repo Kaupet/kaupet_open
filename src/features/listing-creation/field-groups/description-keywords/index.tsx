@@ -124,7 +124,7 @@ export function KeywordChips({
  * rent beskrivelse + nøkkelord for alle kategorier, kjøretøy inkludert.
  */
 export function DescriptionKeywordsGroup(props: WizardSharedProps) {
-  if (props.boatFactsActive) return null;
+  if (props.attributesOwnedByGroup) return null;
   return (
     <>
       <DescriptionField {...props} />

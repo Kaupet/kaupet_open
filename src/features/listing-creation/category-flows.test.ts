@@ -185,28 +185,8 @@ describe("resolveWizardPages", () => {
       ]);
     }
   });
-
-  it("grupperer båtflyten i de samme oppgavene på web og native", () => {
-    const groups = [
-      "photos",
-      "boat-facts",
-      "category-attributes",
-      "description-keywords",
-      "delivery",
-      "location",
-      "review-publish",
-    ];
-
-    const expected = [
-      ["photos"],
-      ["boat-facts", "category-attributes", "description-keywords"],
-      ["delivery", "location"],
-      ["review-publish"],
-    ];
-    expect(resolveWizardPages(groups, { native: false })).toEqual(expected);
-    expect(resolveWizardPages(groups, { native: true })).toEqual(expected);
-  });
 });
+
 describe("withRuntimeFieldGroups", () => {
   const landingFlow = ["photos", "category-attributes", "description-keywords", "review-publish"];
 
