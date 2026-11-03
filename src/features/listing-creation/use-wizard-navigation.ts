@@ -10,7 +10,7 @@ export type ReviewSection = "category" | "content" | "details" | "location";
 const REVIEW_SECTION_GROUP_KEYS: Record<ReviewSection, string[]> = {
   category: ["category-select"],
   content: ["photos", "title"],
-  details: ["category-attributes", "description-keywords", "price", "boat-facts"],
+  details: ["category-attributes", "description-keywords", "price"],
   location: ["delivery", "location"],
 };
 

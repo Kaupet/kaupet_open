@@ -7,36 +7,21 @@ import { displayPriceNok, formatNokNumber, formatPrice } from "@/lib/format";
 import { useListingImageFallback } from "@/hooks/use-listing-image-fallback";
 import { FavoriteButton } from "@/components/favorite-button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { PART_FITMENT_SCOPE_KEY, PART_FITMENT_MODEL_IDS_KEY } from "@/lib/category-filters";
+import { listingCardUsage, verticals } from "@/lib/verticals";
 import type { ListingCardData } from "@/lib/listing-card-data";
-function partFitmentLabel(attributes: Record<string, unknown> | null | undefined): string | null {
-  const scope = attributes?.[PART_FITMENT_SCOPE_KEY];
-  if (scope === "universal") return "Universal del";
-  if (scope === "unknown") return "Kompatibilitet ikke oppgitt";
-  if (scope === "specific") {
-    const count = Array.isArray(attributes?.[PART_FITMENT_MODEL_IDS_KEY])
-      ? attributes[PART_FITMENT_MODEL_IDS_KEY].length
-      : 0;
-    return count > 0
-      ? count === 1
-        ? "Selger oppgir 1 kompatibel bilmodell"
-        : `Selger oppgir ${count} kompatible bilmodeller`
-      : "Selger oppgir kompatibilitet";
-  }
-  return null;
-}
 
-/** Usage metric under the title: kilometers for vehicles, engine hours for
- * boats — whichever the listing's attributes carry. */
+/** Bruksmålet under tittelen (Verticals.cardUsageKeys, f.eks. kilometerstand),
+ * eller ingenting når annonsen ikke har et. */
 export function UsageLabel({
-  value,
-  unit,
+  attributes,
   className,
 }: {
-  value: number;
-  unit: string;
+  attributes: Record<string, unknown> | null | undefined;
   className?: string;
 }) {
+  const usage = listingCardUsage(attributes);
+  if (!usage) return null;
+  const { value, unit } = usage;
   return (
     <p
       className={`flex shrink-0 items-center gap-1 text-xs text-muted-foreground ${className ?? ""}`}
@@ -148,7 +133,7 @@ export function ListingCardContent({
     : !listing.is_free && displayPrice == null && missingPriceLabel
       ? missingPriceLabel
       : formatPrice({ price_nok: displayPrice, is_free: listing.is_free });
-  const fitmentLabel = partFitmentLabel(listing.attributes);
+  const compoundLabel = verticals.compoundAttribute?.cardLabel(listing.attributes) ?? null;
 
   return (
     <>
@@ -171,8 +156,8 @@ export function ListingCardContent({
         {listing.subtitle && (
           <p className="line-clamp-1 text-xs text-muted-foreground">{listing.subtitle}</p>
         )}
-        {fitmentLabel && (
-          <p className="line-clamp-1 text-xs text-muted-foreground">{fitmentLabel}</p>
+        {compoundLabel && (
+          <p className="line-clamp-1 text-xs text-muted-foreground">{compoundLabel}</p>
         )}
         <div className="flex items-baseline justify-between gap-2">
           <p
@@ -183,11 +168,7 @@ export function ListingCardContent({
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           {listing.city && <span>{listing.city}</span>}
-          {typeof listing.mileage_km === "number" ? (
-            <UsageLabel value={listing.mileage_km} unit="km" />
-          ) : typeof listing.engine_hours === "number" ? (
-            <UsageLabel value={listing.engine_hours} unit="t" />
-          ) : null}
+          <UsageLabel attributes={listing.attributes} />
         </div>
       </div>
     </>
@@ -296,11 +277,7 @@ export const ListingCard = memo(function ListingCard({
               >
                 {priceLabel}
               </p>
-              {typeof listing.mileage_km === "number" ? (
-                <UsageLabel value={listing.mileage_km} unit="km" />
-              ) : typeof listing.engine_hours === "number" ? (
-                <UsageLabel value={listing.engine_hours} unit="t" />
-              ) : null}
+              <UsageLabel attributes={listing.attributes} />
             </div>
             {listing.city && <p className="text-xs text-muted-foreground">{listing.city}</p>}
           </div>

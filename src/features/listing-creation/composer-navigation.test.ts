@@ -46,12 +46,12 @@ describe("composerflyt fra preview og review", () => {
     });
     expect(composerForwardStep(5, nativePages.length, true)).toBe(5);
   });
-  it("finner båtens detaljside når flere feltgrupper deler samme native side", () => {
-    const boatPages = [
+  it("finner vertikalens detaljside når flere feltgrupper deler samme native side", () => {
+    const verticalPages = [
       { groups: [{ key: "photos" }] },
       {
         groups: [
-          { key: "boat-facts" },
+          { key: "vertical-facts" },
           { key: "category-attributes" },
           { key: "description-keywords" },
         ],
@@ -60,7 +60,7 @@ describe("composerflyt fra preview og review", () => {
       { groups: [{ key: "review-publish" }] },
     ];
 
-    expect(reviewSectionSteps(boatPages, ["boat-facts", "category-attributes"])).toEqual({
+    expect(reviewSectionSteps(verticalPages, ["vertical-facts", "category-attributes"])).toEqual({
       first: 2,
       last: 2,
     });

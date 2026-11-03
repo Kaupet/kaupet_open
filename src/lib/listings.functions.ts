@@ -25,16 +25,12 @@ import {
   findInvalidDateAttribute,
   getMissingRequiredFilters,
   normalizeFilter,
-  isBoatCategory,
-  PART_FITMENT_SCOPE_KEY,
-  PART_FITMENT_MODEL_IDS_KEY,
-  PART_FITMENT_YEAR_FROM_KEY,
-  PART_FITMENT_YEAR_TO_KEY,
+  filterCategoryBehavior,
   valueGroupFor,
   type CategoryNode,
 } from "@/lib/category-filters";
 import { getCategoryBehavior, type CategoryBehavior } from "@/lib/category-behavior";
-import { equipmentFilterKeys } from "@/lib/verticals";
+import { equipmentFilterKeys, normalizeCompoundAttributes, verticals } from "@/lib/verticals";
 import { assertUserNotRateLimited } from "@/lib/rate-limit.server";
 import {
   effectiveFlowForCategory,
@@ -94,37 +90,22 @@ async function assertListingCreationAllowed(userId: string, message: string) {
   await assertUserNotRateLimited(userId, "listing_creation", message);
 }
 
-function validatePartFitment(
+/** Vertikalens kontroll av sitt sammensatte attributt (CompoundAttribute),
+ * for kategorier som har det. */
+function validateCompoundAttribute(
   categoryId: string,
   filters: ReturnType<typeof normalizeFilter>[],
   categoriesById: Map<string, CategoryNode>,
   attributes: Record<string, string | number | boolean | string[]>,
 ) {
-  const isPartCategory = effectiveFiltersForCategory(categoryId, filters, categoriesById).some(
-    (filter) => filter.key === PART_FITMENT_SCOPE_KEY,
+  const compound = verticals.compoundAttribute;
+  if (!compound) return;
+  const hasCompound = effectiveFiltersForCategory(categoryId, filters, categoriesById).some(
+    (filter) => filter.key === compound.anchorKey,
   );
-  if (!isPartCategory) return;
-
-  const scope = attributes[PART_FITMENT_SCOPE_KEY];
-  if (scope !== "universal" && scope !== "specific" && scope !== "unknown") {
-    throw new ClientError("Velg hvordan delen passer til kjøretøy.", 400);
-  }
-  if (scope !== "specific") return;
-
-  const modelIds = attributes[PART_FITMENT_MODEL_IDS_KEY];
-  if (
-    !Array.isArray(modelIds) ||
-    modelIds.length === 0 ||
-    modelIds.some((id) => !/^[0-9a-f-]{36}$/iu.test(id))
-  ) {
-    throw new ClientError("Legg til minst én gyldig bilmodell.", 400);
-  }
-
-  const yearFrom = attributes[PART_FITMENT_YEAR_FROM_KEY];
-  const yearTo = attributes[PART_FITMENT_YEAR_TO_KEY];
-  if (typeof yearFrom === "number" && typeof yearTo === "number" && yearFrom > yearTo) {
-    throw new ClientError("Årsmodell fra kan ikke være høyere enn årsmodell til.", 400);
-  }
+  if (!hasCompound) return;
+  const error = compound.validate(attributes);
+  if (error) throw new ClientError(error, 400);
 }
 function assertAttributeFormats(
   categoryId: string | null,
@@ -219,15 +200,18 @@ async function validateExistingListingForPublish(
     loadedRules ?? (await loadCategoryRules(supabaseAdmin, "republishListing.rules"));
   const categoryBehavior = getCategoryBehavior(
     valueGroupFor(listing.category_id, normalizedFilters, categoriesById),
-    isBoatCategory(listing.category_id, normalizedFilters, categoriesById),
+    filterCategoryBehavior(listing.category_id, normalizedFilters, categoriesById),
   );
   const attributesResult = attributesSchema.safeParse(listing.attributes ?? {});
   if (!attributesResult.success) throw new ClientError("Annonsens attributter er ugyldige.", 400);
-  const attributes = normalizeNumericAttributes(
-    listing.category_id,
-    normalizedFilters,
-    categoriesById,
-    attributesResult.data,
+  const attributes = normalizeCompoundAttributes(
+    normalizeNumericAttributes(
+      listing.category_id,
+      normalizedFilters,
+      categoriesById,
+      attributesResult.data,
+    ),
+    effectiveFiltersForCategory(listing.category_id, normalizedFilters, categoriesById),
   );
   assertAttributeFormats(
     listing.category_id,
@@ -248,7 +232,7 @@ async function validateExistingListingForPublish(
     if (missing.length > 0) {
       throw new Error(`Fyll inn: ${missing.map((filter) => filter.label_nb).join(", ")}`);
     }
-    validatePartFitment(listing.category_id, normalizedFilters, categoriesById, attributes);
+    validateCompoundAttribute(listing.category_id, normalizedFilters, categoriesById, attributes);
   }
 
   const { fieldGroups } = effectiveFlowForCategory(listing.category_id, flowRows, categoriesById);
@@ -507,15 +491,18 @@ export const createListing = createServerFn({ method: "POST" })
       supabaseAdmin,
       "database",
     );
-    const attributes = normalizeNumericAttributes(
-      data.category_id,
-      normalizedFilters,
-      categoriesById,
-      data.attributes ?? {},
+    const attributes = normalizeCompoundAttributes(
+      normalizeNumericAttributes(
+        data.category_id,
+        normalizedFilters,
+        categoriesById,
+        data.attributes ?? {},
+      ),
+      effectiveFiltersForCategory(data.category_id, normalizedFilters, categoriesById),
     );
     const categoryBehavior = getCategoryBehavior(
       valueGroupFor(data.category_id, normalizedFilters, categoriesById),
-      isBoatCategory(data.category_id, normalizedFilters, categoriesById),
+      filterCategoryBehavior(data.category_id, normalizedFilters, categoriesById),
     );
     const missing = categoryBehavior.requiresCategoryFilterValues
       ? getMissingRequiredFilters(data.category_id, normalizedFilters, categoriesById, attributes, [
@@ -534,7 +521,7 @@ export const createListing = createServerFn({ method: "POST" })
       categoryBehavior,
     );
     if (categoryBehavior.requiresCategoryFilterValues) {
-      validatePartFitment(data.category_id, normalizedFilters, categoriesById, attributes);
+      validateCompoundAttribute(data.category_id, normalizedFilters, categoriesById, attributes);
     }
 
     const { fieldGroups } = effectiveFlowForCategory(data.category_id, flowRows, categoriesById);
@@ -795,11 +782,9 @@ export const updateListingAttributes = createServerFn({ method: "POST" })
     const { normalizedFilters, categoriesById } = categoryRules;
     // Bare det brukeren sender valideres: en eldre ugyldig verdi i et annet
     // felt skal ikke sperre redigering av resten.
-    const patch = normalizeNumericAttributes(
-      categoryId,
-      normalizedFilters,
-      categoriesById,
-      data.attributes,
+    const patch = normalizeCompoundAttributes(
+      normalizeNumericAttributes(categoryId, normalizedFilters, categoriesById, data.attributes),
+      effectiveFiltersForCategory(categoryId, normalizedFilters, categoriesById),
     );
     assertAttributeFormats(
       categoryId,
@@ -808,7 +793,7 @@ export const updateListingAttributes = createServerFn({ method: "POST" })
       patch,
       getCategoryBehavior(
         valueGroupFor(categoryId, normalizedFilters, categoriesById),
-        isBoatCategory(categoryId, normalizedFilters, categoriesById),
+        filterCategoryBehavior(categoryId, normalizedFilters, categoriesById),
       ),
     );
 

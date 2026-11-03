@@ -17,10 +17,7 @@ import {
   filterDependencyMet,
   getMissingRequiredFilters,
   isAlternativeFilter,
-  NUMERIC_DIGIT_CAPS,
-  PART_FITMENT_SCOPE_KEY,
-  PART_FITMENT_MODEL_IDS_KEY,
-  PART_FITMENT_YEAR_KEY,
+  numericDigitCap,
   POSITIVE_NUMERIC_ATTRIBUTE_KEYS,
   type AttributeValue,
   type CategoryFilter,
@@ -130,44 +127,30 @@ export function AttributeFields({
   };
 
   const brandModel = verticals.brandModel;
+  const compound = verticals.compoundAttribute;
   return (
     <div className="space-y-4">
       {heading && <p className="text-sm font-medium">{heading}</p>}
       {filters.map((f) => {
-        // Passform-, merke- og modellfeltene kommer fra vertikalen (kjøretøy);
-        // uten den finnes ikke tabellene de slår opp i.
-        if (
-          !brandModel &&
-          (f.key === PART_FITMENT_SCOPE_KEY ||
-            f.type === "parent_select" ||
-            f.type === "child_select")
-        ) {
+        // Merke- og modellfeltene kommer fra vertikalen; uten den finnes
+        // ikke tabellene de slår opp i.
+        if (!brandModel && (f.type === "parent_select" || f.type === "child_select")) {
           return null;
         }
-        if (brandModel && f.key === PART_FITMENT_SCOPE_KEY) {
+        // Vertikalens sammensatte attributt har ett felt for alle nøklene sine.
+        if (compound && f.key === compound.anchorKey) {
           return (
             <Suspense key={f.id} fallback={null}>
-              <brandModel.PartFitmentField
+              <compound.Field
                 value={value}
                 onChange={onChange}
                 required={required}
-                scopeError={
-                  missingKeys.has(PART_FITMENT_SCOPE_KEY)
-                    ? "Velg hvordan delen passer til kjøretøy."
-                    : undefined
-                }
-                modelsError={
-                  missingKeys.has(PART_FITMENT_MODEL_IDS_KEY)
-                    ? "Legg til minst én bilmodell."
-                    : undefined
-                }
+                missingKeys={missingKeys}
               />
             </Suspense>
           );
         }
-        if (f.key === PART_FITMENT_MODEL_IDS_KEY || f.key === PART_FITMENT_YEAR_KEY) {
-          return null;
-        }
+        if (compound?.keys.includes(f.key)) return null;
         if (brandModel && f.type === "parent_select") {
           return (
             <Suspense key={f.id} fallback={null}>
@@ -455,7 +438,7 @@ function AttributeField({
   // getMissingRequiredFilters — marking them "*" here promised a validation
   // that never fires. Same for `is_optional` filters.
   const showRequiredMark = required && filter.type !== "range" && !filter.is_optional;
-  const digitCap = isNumber ? NUMERIC_DIGIT_CAPS[filter.key] : undefined;
+  const digitCap = isNumber ? numericDigitCap(filter.key) : undefined;
   const requiresPositiveValue = isNumber && POSITIVE_NUMERIC_ATTRIBUTE_KEYS.includes(filter.key);
   return (
     <div className="space-y-2">

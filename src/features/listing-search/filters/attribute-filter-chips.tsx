@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTriggerBare } from "@/componen
 import { ChecklistRow, ChecklistSearch } from "@/components/checklist";
 import { FilterChip } from "@/features/listing-search/filters/filter-chip";
 import { CategoryFilterFields } from "@/features/listing-search/filters/category-filter-fields";
-import { usePartFitmentLabel, useVerticalBrands, verticals } from "@/lib/verticals";
+import { useCompoundAttributeSearchLabel, useVerticalBrands, verticals } from "@/lib/verticals";
 import { RangeFilterField } from "@/components/range-filter-field";
 import { CONDITIONS, DEFAULT_SEARCH_RADIUS_KM } from "@/lib/advanced-search-value";
 import { PRICE_BOUNDS } from "@/lib/filter-range-bounds";
@@ -26,8 +26,7 @@ import {
 import { splitPrimaryFilters } from "@/lib/category-filters";
 import { hapticImpact } from "@/lib/haptics";
 import {
-  PART_FITMENT_MODEL_IDS_KEY,
-  SEARCH_MULTISELECT_KEYS,
+  isSearchMultiselectKey,
   type AttributeFilterValue,
   type CategoryFilter,
 } from "@/lib/category-filters";
@@ -325,8 +324,8 @@ export function AttributeFilterChips({
 
     // Karosseri/Farge/Drivstoff: a listing has one value, but a buyer
     // narrowing search should be able to check several allowed values —
-    // see SEARCH_MULTISELECT_KEYS.
-    if (f.type === "select" && SEARCH_MULTISELECT_KEYS.includes(f.key)) {
+    // see isSearchMultiselectKey.
+    if (f.type === "select" && isSearchMultiselectKey(f.key)) {
       const selected = current?.kind === "multiselect" ? current.values : [];
       return (
         <AttributeMultiChip
@@ -424,15 +423,16 @@ export function AttributeFilterChips({
       );
     }
 
-    // Bilmodellisten er søkbar og kan bli høyere enn plassen rundt chipen.
-    // Bruk et modal-overlay i stedet for en ankret popover, ellers kan
-    // Radix flippe menyen opp over filterpanelet (særlig på forsiden).
-    if (f.key === PART_FITMENT_MODEL_IDS_KEY) {
-      const PartFitmentSearchField = verticals.brandModel?.PartFitmentSearchField;
-      if (!PartFitmentSearchField) return null;
+    // Vertikalens søkefelt for det sammensatte attributtet kan være søkbart
+    // og høyere enn plassen rundt chipen. Bruk et modal-overlay i stedet for
+    // en ankret popover, ellers kan Radix flippe menyen opp over
+    // filterpanelet (særlig på forsiden).
+    const compound = verticals.compoundAttribute;
+    if (compound && f.key === compound.searchKey) {
+      const CompoundSearchField = compound.SearchField;
       const selected = current?.kind === "multiselect" ? current.values : [];
       const chip = (
-        <PartFitmentFilterChip
+        <CompoundAttributeFilterChip
           label={label}
           active={active}
           values={selected}
@@ -457,7 +457,7 @@ export function AttributeFilterChips({
               <DialogTitle>{f.label_nb}</DialogTitle>
             </DialogHeader>
             <Suspense fallback={null}>
-              <PartFitmentSearchField
+              <CompoundSearchField
                 value={values[f.key]}
                 onChange={(next) => onChange(f.key, next)}
                 contentOnly
@@ -890,7 +890,7 @@ function MultiSelectPopoverBody({
 }
 
 /** Karosseri/Farge/Drivstoff as a checkbox list rather than a single-pick
- * dropdown — see SEARCH_MULTISELECT_KEYS for why these `type: "select"`
+ * dropdown — see isSearchMultiselectKey for why these `type: "select"`
  * filters get a multi-value chip in search despite each listing only
  * carrying one value. */
 function AttributeMultiChip({
@@ -1043,7 +1043,7 @@ function ModelMultiChip({
   );
 }
 
-function PartFitmentFilterChip({
+function CompoundAttributeFilterChip({
   label,
   active,
   values,
@@ -1058,7 +1058,7 @@ function PartFitmentFilterChip({
   variant?: "pill" | "field";
   fieldLabel?: string;
 }) {
-  const allBrandLabel = usePartFitmentLabel(values);
+  const allBrandLabel = useCompoundAttributeSearchLabel(values);
 
   return (
     <FilterChip

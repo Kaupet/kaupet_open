@@ -10,8 +10,6 @@ export type ListingCardData = {
   cover_path: string | null;
   total_views?: number;
   views_last_week?: number;
-  mileage_km?: number | null;
-  engine_hours?: number | null;
   category_slug?: string | null;
   attributes?: Record<string, unknown> | null;
   /** Satt for solgte annonser — kortet viser Solgt-merke og «Solgt» som pris. */
@@ -25,13 +23,10 @@ export type PopularListingRow = Omit<ListingCardData, "id" | "attributes"> & {
   subtitle: string | null;
   category_slug: string | null;
   attributes: unknown;
-  mileage_km: number | null;
 };
 
 /** Maps either popularity RPC result to the shared listing-card shape. */
 export function toPopularListingCardData(row: PopularListingRow): ListingCardData {
-  const attrs = row.attributes as Record<string, unknown> | null;
-  const engineHoursRaw = attrs?.engine_hours;
   return {
     id: row.listing_id,
     kaupet_code: row.kaupet_code,
@@ -44,9 +39,6 @@ export function toPopularListingCardData(row: PopularListingRow): ListingCardDat
     cover_path: row.cover_path,
     total_views: Number(row.total_views ?? 0),
     views_last_week: Number(row.views_last_week ?? 0),
-    mileage_km: row.mileage_km != null ? Number(row.mileage_km) : null,
-    engine_hours:
-      typeof engineHoursRaw === "number" && Number.isFinite(engineHoursRaw) ? engineHoursRaw : null,
     category_slug: row.category_slug,
     attributes: row.attributes as Record<string, unknown> | null,
   };
@@ -73,8 +65,7 @@ export type RawListingCardRow = {
 /**
  * Maps a raw `listings` row (with the standard listing_images/attributes/
  * categories join) to `ListingCardData` — picks the lowest-sort_order image
- * as the cover, pulls `mileage_km` out of the free-form `attributes` JSON,
- * and unwraps the `categories` relation (Supabase returns it as an array or
+ * as the cover and unwraps the `categories` relation (Supabase returns it as an array or
  * a single object depending on the join). Shared by every screen that reads
  * listings straight from the table rather than through a search/RPC path
  * that already returns `ListingCardData`-shaped rows.
@@ -82,8 +73,6 @@ export type RawListingCardRow = {
 export function toListingCardData(row: RawListingCardRow): ListingCardData {
   const imgs = (row.listing_images ?? []).slice().sort((a, b) => a.sort_order - b.sort_order);
   const attrs = row.attributes as Record<string, unknown> | null;
-  const mileageRaw = attrs?.mileage_km;
-  const engineHoursRaw = attrs?.engine_hours;
   const category = Array.isArray(row.categories) ? row.categories[0] : row.categories;
   return {
     id: row.id,
@@ -95,9 +84,6 @@ export function toListingCardData(row: RawListingCardRow): ListingCardData {
     city: row.city,
     created_at: row.created_at,
     cover_path: imgs[0]?.storage_path ?? null,
-    mileage_km: typeof mileageRaw === "number" && Number.isFinite(mileageRaw) ? mileageRaw : null,
-    engine_hours:
-      typeof engineHoursRaw === "number" && Number.isFinite(engineHoursRaw) ? engineHoursRaw : null,
     category_slug: category?.slug ?? null,
     attributes: attrs,
     reserved_until: row.reserved_until ?? null,

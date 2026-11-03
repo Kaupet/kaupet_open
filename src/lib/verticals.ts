@@ -9,6 +9,7 @@ import type { ListingTask } from "@/features/listing-creation/category-flows";
 import type { ReviewSection } from "@/features/listing-creation/use-wizard-navigation";
 import type { CategoryBehavior } from "@/lib/category-behavior";
 import type { ConditionValue } from "@/lib/constants";
+import type { RangeBounds } from "@/lib/filter-range-bounds";
 import type {
   AttributeFilterValue,
   AttributeValue,
@@ -19,16 +20,18 @@ import type {
 
 /**
  * Registreringspunkter for kategorivertikaler. Kjernen importerer aldri
- * vertikalkode: kjøretøy fyller inn punktene fra src/lib/vehicle/register.ts,
- * som importeres én gang ved oppstart (src/router.tsx). Uten registrert
- * vertikal (kaupet_open) er alle punktene tomme, og kjernen faller tilbake
- * til generisk oppførsel.
+ * vertikalkode: kjøretøy og båt fyller inn punktene fra
+ * src/lib/vehicle/register.ts og src/lib/boat/register.ts, som importeres én
+ * gang ved oppstart (src/router.tsx). Uten registrert vertikal (kaupet_open)
+ * er alle punktene tomme, og kjernen faller tilbake til generisk oppførsel.
+ * Flere vertikaler kan registrere seg, se registerVertical.
  *
  * Modulen importerer bare typer, slik at registreringen ikke drar
  * annonseflyten eller annonsesiden inn i inngangsbunten.
  */
 /** Det annonsesiden gir vertikalen for å avlede sin del av siden. */
 export type ListingDetailInput = {
+  categoryId: string | null;
   categorySlug: string | null;
   attributes: Record<string, unknown>;
   priceNok: number | null;
@@ -72,15 +75,12 @@ type BrandFieldProps = {
   error?: string;
 };
 
-/** Merke- og modellfeltene (filtertypene parent_select/child_select) og
- * delpassform (PART_FITMENT_*), som begge slår opp i vertikalens
- * verdilister. Uten registrert vertikal er listene tomme, feltene vises ikke,
- * og ingenting hentes. */
+/** Merke- og modellfeltene (filtertypene parent_select/child_select), som
+ * slår opp i vertikalens verdilister. Uten registrert vertikal er listene
+ * tomme, feltene vises ikke, og ingenting hentes. */
 export type BrandModelFields = {
   useBrands: (enabled: boolean) => BrandRow[] | undefined;
   fetchBrands: (queryClient: QueryClient) => Promise<BrandRow[]>;
-  /** Kort etikett for valgte modell-id-er i delpassformfilteret, f.eks. «Volvo (alle)». */
-  usePartFitmentLabel: (modelIds: string[]) => string | null;
   BrandField: ComponentType<BrandFieldProps>;
   ModelWithClassField: ComponentType<BrandFieldProps & { brandName: string | undefined }>;
   ModelMultiField: ComponentType<{
@@ -97,19 +97,61 @@ export type BrandModelFields = {
     onChange: (values: string[]) => void;
     counts?: Record<string, number>;
   }>;
-  PartFitmentField: ComponentType<{
+};
+
+/** Et attributt som lagres i flere nøkler og har egne felt i annonseskjemaet,
+ * søket og annonsesiden (kjøretøy: delpassform for bildeler). Kjernen kjenner
+ * bare nøklene vertikalen oppgir her. Kategorier med `anchorKey` blant
+ * filtrene har attributtet. */
+export type CompoundAttribute = {
+  /** Filteret der Field står i annonseskjemaet. */
+  anchorKey: string;
+  /** Filteret der SearchField står i søket. Verdien lagres som en liste, og
+   * søket krever at listen inneholder de valgte verdiene. */
+  searchKey: string;
+  /** Alle nøklene attributtet eier, inkludert de to over. Vises ikke som
+   * generiske felt i skjemaet eller i faktarutenettet på annonsesiden. */
+  keys: readonly string[];
+  /** Etiketten for en valgt søkeverdi i aktive filtre, etter filternavnet. */
+  searchValueLabel: string;
+  /** Gjør eldre nøkkelnavn (f.eks. i lokale utkast) om til filterets nøkkel. */
+  normalize: <T>(
+    attributes: Record<string, T>,
+    filters: readonly CategoryFilter[],
+  ) => Record<string, T>;
+  /** Serverkontrollen ved publisering; feilmeldingen, eller null. */
+  validate: (attributes: Record<string, AttributeValue>) => string | null;
+  /** Linjen under tittelen på annonsekortet, eller null. */
+  cardLabel: (attributes: Record<string, unknown> | null | undefined) => string | null;
+  /** Kort etikett for valgte søkeverdier, f.eks. «Volvo (alle)», eller null. */
+  useSearchLabel: (values: string[]) => string | null;
+  Field: ComponentType<{
     value: Record<string, AttributeValue>;
     onChange: (next: Record<string, AttributeValue>) => void;
     required?: boolean;
-    scopeError?: string;
-    modelsError?: string;
+    /** Nøklene getMissingRequiredFilters fant uten verdi. */
+    missingKeys: ReadonlySet<string>;
   }>;
-  PartFitmentSearchField: ComponentType<{
+  SearchField: ComponentType<{
     value: AttributeFilterValue | undefined;
     onChange: (value: AttributeFilterValue | undefined) => void;
     contentOnly?: boolean;
   }>;
-  PartFitmentSummary: ComponentType<{ attributes: Record<string, unknown> }>;
+  Summary: ComponentType<{ attributes: Record<string, unknown> }>;
+};
+
+/** Avgiften kjøperen betaler i tillegg til selgers pris (kjøretøy:
+ * omregistreringsavgiften), i prissteget for kategorier med
+ * CategoryBehavior.buyerFee. */
+export type BuyerFeeFields = {
+  /** Beløpet som legges på prisen, eller null når ingenting kommer i tillegg. */
+  addedOnTopKr: (attributes: AttributeMap, calculatedKr: number | null) => number | null;
+  /** Feltene for avgiften under prisen. */
+  Fields: ComponentType<{
+    attributes: AttributeMap;
+    onAttributesChange: (next: AttributeMap) => void;
+    calculatedKr: number | null;
+  }>;
 };
 
 /** Det annonseflyten (ny-annonse.tsx) gir vertikalens wizard-hook. */
@@ -188,14 +230,19 @@ export type VerticalFieldGroup = FieldGroup & {
   previewSection?: string;
   /** Delen av Se over-steget som redigeres her. */
   reviewSection?: ReviewSection;
-  /** Felt uten egen validering som en valideringsfeil kan sende brukeren hit for. */
-  reviewFields?: readonly string[];
+  /** Felt uten egen validering som en valideringsfeil kan sende brukeren hit
+   * for, med etiketten feilen vises med. */
+  reviewFields?: Readonly<Record<string, string>>;
   /** Gruppen viser kategoriattributter; mislykket validering markerer dem som berørt. */
   editsAttributes?: boolean;
   /** Gruppen er prissteget i flyten (i stedet for price). */
   priceStep?: boolean;
   /** Gruppen har beskrivelsesfeltet, som fyller siden på native når gruppen står alene. */
   hasDescription?: boolean;
+  /** Gruppen fanger alle kategoriattributtene og beskrivelsen når den står i
+   * kategoriens flyt (båt: boat-facts): category-attributes viser da bare
+   * kategorivalget, og description-keywords vises ikke. */
+  ownsCategoryAttributes?: boolean;
   /** Gruppen vises bare for disse bladkategoriene. */
   leafSlugs?: readonly string[];
   /** Gruppen er ikke et steg, men tilbys som forbedring på Se over-steget når
@@ -217,20 +264,34 @@ export type Verticals = {
   /** Utstyrsattributter: samles i én rad i søkepanelet, vises i vertikalens
    * egen utstyrsliste og kreves aldri ved publisering. */
   equipmentFilterKeys: readonly string[];
+  /** `select`-filtre der en annonse har én verdi, men kjøperen kan krysse av
+   * for flere i søket, i tillegg til SEARCH_MULTISELECT_KEYS. */
+  searchMultiselectFilterKeys: readonly string[];
   /** Filtre der hver valgverdi bare finnes i én kategori, slik at et
    * valgnavn i fritekstsøket kan peke rett på kategorien (matchAttributeOptionPhrase). */
   exclusiveOptionFilterKeys: readonly string[];
   /** Oppførselen til kategoriene vertikalen eier, se getCategoryBehavior. */
   categoryBehavior: CategoryBehavior;
+  /** Oppførselen til kategorier som har (eller arver) filteret med nøkkelen
+   * (båt: boat_type), se filterCategoryBehavior. */
+  filterCategoryBehaviors: Record<string, CategoryBehavior>;
+  /** Bruksmålet under tittelen på annonsekortet (kjøretøy: kilometerstand,
+   * båt: motortimer). Den første nøkkelen annonsen har en tallverdi for, vises. */
+  cardUsageKeys: readonly { key: string; unit: string }[];
+  /** Sliderskala for tallfiltre, i tillegg til kjernens (filter-range-bounds.ts). */
+  numericFilterBounds: Record<string, Omit<RangeBounds, "unit">>;
+  /** Maks antall siffer i tallfelt, i tillegg til NUMERIC_DIGIT_CAPS. */
+  numericDigitCaps: Record<string, number>;
   /** Egne tilstandsvalg per kategori-slug, brukt i stedet for CONDITIONS. */
   conditionsBySlug: Record<string, readonly { value: ConditionValue; label: string }[]>;
-  /** Vertikalens del av annonsesiden, eller null når annonsen ikke hører til den. */
+  /** Vertikalens del av annonsesiden, eller null når annonsen ikke hører til
+   * den. Med flere vertikaler gjelder den første som svarer. */
   listingDetail: (input: ListingDetailInput) => ListingDetailSections | null;
-  /** Nøkkeltall i den utvidede kortvisningen i søkeresultatet, eller null. */
+  /** Nøkkeltall i den utvidede kortvisningen i søkeresultatet, eller null.
+   * Med flere vertikaler gjelder den første som svarer. */
   listingCardFacts: (input: {
     categorySlug: string | null;
     attributes: Record<string, unknown>;
-    mileageKm: number | null;
   }) => ReactNode;
   /** Owner-only dialog for å endre det vertikalen avleder annonsen fra
    * (kjøretøy: registreringsnummeret), åpnet via openVerticalEditDialog. */
@@ -260,6 +321,8 @@ export type Verticals = {
     title: string;
   }>;
   brandModel: BrandModelFields;
+  compoundAttribute: CompoundAttribute;
+  buyerFee: BuyerFeeFields;
   /** Totalprisen kjøperen betaler (kjøretøy: inkl. omregistreringsavgift),
    * eller null når kategorien bare viser selgers pris. */
   listingTotalPriceKr: (
@@ -322,9 +385,17 @@ export function useVerticalTitleCategoryHint(
   return (verticals.wizard?.useTitleCategoryHint ?? noHint)(params);
 }
 
-/** Se BrandModelFields.usePartFitmentLabel; null uten registrert vertikal. */
-export function usePartFitmentLabel(modelIds: string[]): string | null {
-  return (verticals.brandModel?.usePartFitmentLabel ?? noLabel)(modelIds);
+/** Se CompoundAttribute.useSearchLabel; null uten registrert vertikal. */
+export function useCompoundAttributeSearchLabel(values: string[]): string | null {
+  return (verticals.compoundAttribute?.useSearchLabel ?? noLabel)(values);
+}
+
+/** Se CompoundAttribute.normalize; uendret uten registrert vertikal. */
+export function normalizeCompoundAttributes<T>(
+  attributes: Record<string, T>,
+  filters: readonly CategoryFilter[],
+): Record<string, T> {
+  return verticals.compoundAttribute?.normalize(attributes, filters) ?? attributes;
 }
 
 /** Feltgruppen med denne nøkkelen, hvis en vertikal har registrert den. */
@@ -356,6 +427,58 @@ export function verticalRootCategory(): Verticals["rootCategory"] | null {
   return verticals.rootCategory ?? null;
 }
 
+/** Se Verticals.cardUsageKeys: bruksmålet under tittelen på annonsekortet,
+ * eller null. */
+export function listingCardUsage(
+  attributes: Record<string, unknown> | null | undefined,
+): { value: number; unit: string } | null {
+  for (const { key, unit } of verticals.cardUsageKeys ?? []) {
+    const value = attributes?.[key];
+    if (typeof value === "number" && Number.isFinite(value)) return { value, unit };
+  }
+  return null;
+}
+
+/** Punkter flere vertikaler kan fylle: lister legges etter hverandre og
+ * oppslag slås sammen. */
+const MERGED: readonly (keyof Verticals)[] = [
+  "fieldGroups",
+  "filterCategoryBehaviors",
+  "cardUsageKeys",
+  "numericFilterBounds",
+  "numericDigitCaps",
+  "equipmentFilterKeys",
+  "searchMultiselectFilterKeys",
+  "exclusiveOptionFilterKeys",
+  "conditionsBySlug",
+];
+
+/** Kobler en vertikal inn. Punktene i MERGED og de to annonsesideoppslagene
+ * deles mellom vertikalene; de andre punktene kan bare én vertikal fylle (den
+ * siste vinner). */
 export function registerVertical(vertical: Partial<Verticals>) {
-  Object.assign(verticals, vertical);
+  const { listingDetail, listingCardFacts, ...rest } = vertical;
+  const target = verticals as Record<string, unknown>;
+  for (const [key, value] of Object.entries(rest)) {
+    const previous = target[key];
+    if (!MERGED.includes(key as keyof Verticals) || previous === undefined) {
+      target[key] = value;
+    } else {
+      target[key] = Array.isArray(previous)
+        ? [...previous, ...(value as unknown[])]
+        : { ...(previous as object), ...(value as object) };
+    }
+  }
+  if (listingDetail) {
+    const previous = verticals.listingDetail;
+    verticals.listingDetail = previous
+      ? (input) => previous(input) ?? listingDetail(input)
+      : listingDetail;
+  }
+  if (listingCardFacts) {
+    const previous = verticals.listingCardFacts;
+    verticals.listingCardFacts = previous
+      ? (input) => previous(input) ?? listingCardFacts(input)
+      : listingCardFacts;
+  }
 }

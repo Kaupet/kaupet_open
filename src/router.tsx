@@ -1,5 +1,6 @@
 import "./lib/zod-config";
 import "./lib/vehicle/register";
+import "./lib/boat/register";
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
 import { getGlobalStartContext } from "@tanstack/start-client-core";

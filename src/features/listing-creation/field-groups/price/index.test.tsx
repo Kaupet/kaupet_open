@@ -3,11 +3,15 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getCategoryBehavior, type CategoryBehavior } from "@/lib/category-behavior";
+import { registerVertical, verticals } from "@/lib/verticals";
 
 import type { WizardSharedProps } from "../types";
 import { Price } from ".";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  delete verticals.buyerFee;
+});
 
 function baseProps(overrides: Partial<WizardSharedProps> = {}) {
   return {
@@ -72,19 +76,43 @@ describe("Price", () => {
   });
 
   it("tilbyr «Gis bort gratis» og skjuler avgiften for generiske kategorier", () => {
+    registerFee();
     render(<Price {...baseProps()} />);
     expect(screen.getByText("Gis bort gratis")).toBeTruthy();
-    expect(screen.queryByText(/Ikke beregnet/)).toBeNull();
+    expect(screen.queryByText("Avgiftsfelt")).toBeNull();
   });
 
   it("viser kjøperavgiften og skjuler «Gis bort gratis» når behavior krever det", () => {
-    const behavior: CategoryBehavior = {
-      ...getCategoryBehavior(null),
-      buyerFee: true,
-      allowsGiveaway: false,
-    };
-    render(<Price {...baseProps({ behavior })} />);
+    registerFee();
+    render(<Price {...baseProps({ behavior: feeBehavior, priceNok: 1000 })} />);
     expect(screen.queryByText("Gis bort gratis")).toBeNull();
-    expect(screen.getByText(/Ikke beregnet/)).toBeTruthy();
+    expect(screen.getByText("Avgiftsfelt")).toBeTruthy();
+    expect((screen.getByLabelText("Pris synlig i annonse") as HTMLInputElement).value).toMatch(
+      /^1\s250 kr$/,
+    );
+  });
+
+  it("senker prisgrensen med avgiften, så totalen holder seg under grensen", () => {
+    registerFee();
+    const setValue = vi.fn();
+    render(<Price {...baseProps({ behavior: feeBehavior, setValue, priceNok: 10_000_000 })} />);
+    expect(setValue).toHaveBeenCalledWith("price_nok", 9_999_750, expect.anything());
+  });
+
+  it("viser bare prisen når ingen vertikal har registrert avgiften", () => {
+    render(<Price {...baseProps({ behavior: feeBehavior, priceNok: 1000 })} />);
+    expect(screen.queryByLabelText("Pris synlig i annonse")).toBeNull();
   });
 });
+
+const feeBehavior: CategoryBehavior = {
+  ...getCategoryBehavior(null),
+  buyerFee: true,
+  allowsGiveaway: false,
+};
+
+function registerFee() {
+  registerVertical({
+    buyerFee: { addedOnTopKr: () => 250, Fields: () => <p>Avgiftsfelt</p> },
+  });
+}

@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useState } from "react";
+import { Suspense, useEffect, useEffectEvent } from "react";
 import { Search } from "lucide-react";
 
 import { Label } from "@/components/ui/label";
@@ -14,7 +14,7 @@ import { FieldValid } from "../field-valid";
 import { MAX_LISTING_PRICE_NOK } from "@/lib/constants";
 import { RequiredMark } from "../required-mark";
 import { SimilarListings } from "../similar-listings";
-import { OmregistreringsavgiftBox } from "./omregistreringsavgift-box";
+import { verticals } from "@/lib/verticals";
 
 /** Enforced on the input too, so it can never produce a value the client
  * schema, draft save or publish would reject. */
@@ -26,17 +26,11 @@ const MAX_PRICE_NOK = MAX_LISTING_PRICE_NOK;
  * since it only depends on category_id + price_nok, not on anything
  * platform-specific.
  *
- * For kjøretøy also shows the omregistreringsavgift (re-registration fee) the
- * *buyer* pays to the state on ownership transfer, alongside a read-only
- * "Pris synlig i annonse" field right next to the price input — priceNok +
- * the fee, i.e. exactly the number a buyer will see on the published
- * listing, visible at a glance rather than buried in a paragraph below. The
- * calculated fee defaults from `computeOmregistreringsavgift`, but the seller
- * can override it (stored in `attributes.omregistreringsavgift_override_kr`)
- * if they believe it's wrong — e.g. our SVV-derived weight/age is off, or a
- * fritak/exemption applies we don't model. The override is never re-derived
- * server-side, so the seller is told plainly that they're responsible for it
- * being correct.
+ * For categories with `behavior.buyerFee` (kjøretøy) also shows the fee the
+ * *buyer* pays on top, alongside a read-only "Pris synlig i annonse" field
+ * right next to the price input — priceNok + the fee, i.e. exactly the number
+ * a buyer will see on the published listing. The fee's own fields and how
+ * it is derived belong to the vertical (Verticals.buyerFee).
  */
 export function Price({
   register,
@@ -58,55 +52,15 @@ export function Price({
    * visually distinct last-step page. Cosmetic only, no behavior change. */
   heroSize?: boolean;
 }) {
-  const [editingAvgift, setEditingAvgift] = useState(false);
-  const calculatedAvgiftKr = behavior.buyerFee ? calculatedBuyerFeeKr : null;
-  const avgiftOverrideRaw = attributes.omregistreringsavgift_override_kr;
-  const avgiftOverrideKr = typeof avgiftOverrideRaw === "number" ? avgiftOverrideRaw : null;
-  const omregistreringsavgiftKr = avgiftOverrideKr ?? calculatedAvgiftKr;
-  const avgiftFritatt = attributes.omregistreringsavgift_fritatt === true;
-  const avgiftInkludert = attributes.omregistreringsavgift_inkludert === true;
-  const setAvgiftFritatt = (checked: boolean) => {
-    const next = { ...attributes };
-    if (checked) {
-      next.omregistreringsavgift_fritatt = true;
-      delete next.omregistreringsavgift_inkludert;
-    } else {
-      delete next.omregistreringsavgift_fritatt;
-    }
-    onAttributesChange(next);
-  };
-  const setAvgiftInkludert = (checked: boolean) => {
-    const next = { ...attributes };
-    if (checked) {
-      next.omregistreringsavgift_inkludert = true;
-      delete next.omregistreringsavgift_fritatt;
-    } else {
-      delete next.omregistreringsavgift_inkludert;
-    }
-    onAttributesChange(next);
-  };
-  // Ikke en egen attributt — "kjøper bekoster" er ganske enkelt fraværet av
-  // begge de andre flaggene (standardtilstanden appen alltid har hatt), men
-  // vises nå som en egen, forhåndsavkrysset boks i tredelt radio-lignende
-  // UI i stedet for å være implisitt.
-  const avgiftKjoperBekoster = !avgiftFritatt && !avgiftInkludert;
-  const setAvgiftKjoperBekoster = () => {
-    const next = { ...attributes };
-    delete next.omregistreringsavgift_fritatt;
-    delete next.omregistreringsavgift_inkludert;
-    onAttributesChange(next);
-  };
-  // Avgiften kjøper faktisk betaler i tillegg til kjøpesummen — null når
-  // fritatt (ingen avgift) eller inkludert i kjøpesummen (allerede betalt av
-  // selger), selv om det beregnede/overstyrte beløpet fortsatt vises
-  // informativt i avgift-boksen under.
-  const avgiftAddedOnTopKr = avgiftFritatt || avgiftInkludert ? null : omregistreringsavgiftKr;
+  const buyerFee = behavior.buyerFee ? (verticals.buyerFee ?? null) : null;
+  // Avgiften kjøper faktisk betaler i tillegg til kjøpesummen, eller null.
+  const feeAddedOnTopKr = buyerFee?.addedOnTopKr(attributes, calculatedBuyerFeeKr) ?? null;
   // `priceNok` isn't reliably a clean `number` — react-hook-form's blur
   // handling (and other internal syncing) can end up re-reading it from a
   // DOM/string representation, which for this field is the space-formatted
   // display value ("200 000", with an nb-NO non-breaking space). A strict
   // `Number(priceNok)` breaks on that space and silently produces NaN → this
-  // whole vehicle section disappearing. Parse it the same tolerant way
+  // whole buyer-fee section disappearing. Parse it the same tolerant way
   // `formatThousands` displays it: strip everything but digits first, then
   // convert — so a stray space/formatting artifact never breaks this.
   const priceNumeric = (() => {
@@ -116,20 +70,20 @@ export function Price({
     return digits === "" ? null : Number(digits);
   })();
   // "Pris synlig i annonse" stays visible whenever there's a price to show,
-  // even when fritatt/inkludert means nothing gets added on top — it's still
+  // even when nothing gets added on top — it's still
   // useful confirmation of exactly what the buyer will see, not just a
   // conditional add-on display.
   const totalprisKr =
-    !isFree && priceNumeric != null ? priceNumeric + (avgiftAddedOnTopKr ?? 0) : null;
-  // The *listing's displayed total* (price + avgift) must never exceed
+    !isFree && priceNumeric != null ? priceNumeric + (feeAddedOnTopKr ?? 0) : null;
+  // The *listing's displayed total* (price + fee) must never exceed
   // MAX_PRICE_NOK, so the price input's own ceiling is lowered by whatever
   // fee is currently in play — otherwise a seller could type a price that,
   // once the fee is added, shows a "Pris synlig i annonse" above the cap.
-  // No reduction when fritatt/inkludert, since nothing gets added on top.
+  // No reduction when nothing gets added on top.
   const maxPriceInputKr =
-    avgiftAddedOnTopKr != null ? Math.max(0, MAX_PRICE_NOK - avgiftAddedOnTopKr) : MAX_PRICE_NOK;
-  // Clamps down an already-typed price if the avgift only becomes known (or
-  // grows) afterwards — e.g. a registration lookup resolving after the
+    feeAddedOnTopKr != null ? Math.max(0, MAX_PRICE_NOK - feeAddedOnTopKr) : MAX_PRICE_NOK;
+  // Clamps down an already-typed price if the fee only becomes known (or
+  // grows) afterwards — e.g. a vertical's lookup resolving after the
   // seller already entered a price — so the total can never drift past
   // MAX_PRICE_NOK just because the input's max wasn't this tight yet when it
   // was typed.
@@ -227,7 +181,7 @@ export function Price({
             </p>
           )}
         </div>
-        {behavior.buyerFee && totalprisKr != null && (
+        {buyerFee && totalprisKr != null && (
           <div className="w-full space-y-1">
             <Label
               htmlFor="price-visible-in-listing"
@@ -274,31 +228,14 @@ export function Price({
           {errors.price_nok.message as string}
         </p>
       )}
-      {behavior.buyerFee && (
-        <OmregistreringsavgiftBox
-          omregistreringsavgiftKr={omregistreringsavgiftKr}
-          calculatedAvgiftKr={calculatedAvgiftKr}
-          avgiftOverrideKr={avgiftOverrideKr}
-          avgiftFritatt={avgiftFritatt}
-          avgiftInkludert={avgiftInkludert}
-          editingAvgift={editingAvgift}
-          setEditingAvgift={setEditingAvgift}
-          onOverrideChange={(v) => {
-            const next = { ...attributes };
-            if (v === "") delete next.omregistreringsavgift_override_kr;
-            else next.omregistreringsavgift_override_kr = Number(v);
-            onAttributesChange(next);
-          }}
-          onResetOverride={() => {
-            const next = { ...attributes };
-            delete next.omregistreringsavgift_override_kr;
-            onAttributesChange(next);
-          }}
-          avgiftKjoperBekoster={avgiftKjoperBekoster}
-          setAvgiftFritatt={setAvgiftFritatt}
-          setAvgiftInkludert={setAvgiftInkludert}
-          setAvgiftKjoperBekoster={setAvgiftKjoperBekoster}
-        />
+      {buyerFee && (
+        <Suspense fallback={null}>
+          <buyerFee.Fields
+            attributes={attributes}
+            onAttributesChange={onAttributesChange}
+            calculatedKr={calculatedBuyerFeeKr}
+          />
+        </Suspense>
       )}
       {wtbMatch && wtbMatch.count > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">

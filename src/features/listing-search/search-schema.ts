@@ -212,8 +212,6 @@ export function writeAppliedSearchState({ value, attributes }: AppliedSearchStat
 }
 
 export type SearchListing = {
-  mileage_km?: number | null;
-  engine_hours?: number | null;
   id: string;
   kaupet_code: string;
   title: string;

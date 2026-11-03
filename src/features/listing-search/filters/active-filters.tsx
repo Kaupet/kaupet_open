@@ -5,12 +5,9 @@ import { format } from "date-fns";
 import { TermGroupChips } from "@/features/listing-search/filters/term-group-editor";
 import type { LocationValue } from "@/components/location-filter";
 import type { TermGroup } from "@/lib/term-groups";
-import {
-  PART_FITMENT_MODEL_IDS_KEY,
-  type AttributeFilterValue,
-  type CategoryFilter,
-} from "@/lib/category-filters";
+import { type AttributeFilterValue, type CategoryFilter } from "@/lib/category-filters";
 import { parseIsoDate } from "@/lib/iso-date";
+import { verticals } from "@/lib/verticals";
 
 type SearchLike = {
   q: string;
@@ -150,8 +147,8 @@ export function ActiveFilters({
             <AttrChip
               key={`${key}:${v}`}
               label={
-                key === PART_FITMENT_MODEL_IDS_KEY
-                  ? `${filter.label_nb}: valgt kjøretøymodell`
+                key === verticals.compoundAttribute?.searchKey
+                  ? `${filter.label_nb}: ${verticals.compoundAttribute.searchValueLabel}`
                   : `${filter.label_nb}: ${opt?.label_nb ?? v}`
               }
               onRemove={() => onRemoveAttr?.(key, v)}

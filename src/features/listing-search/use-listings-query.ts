@@ -60,8 +60,6 @@ export function useListingsQuery({
       const totalCount = raw[0]?.total_count ?? 0;
       const rows = raw.map((l) => {
         const attrs = l.attributes as Record<string, unknown> | null;
-        const mileageRaw = attrs?.mileage_km;
-        const engineHoursRaw = attrs?.engine_hours;
         return {
           id: l.id,
           kaupet_code: l.kaupet_code,
@@ -74,12 +72,6 @@ export function useListingsQuery({
           lng: l.display_lng as number | null,
           created_at: l.created_at,
           cover_path: l.cover_path,
-          mileage_km:
-            typeof mileageRaw === "number" && Number.isFinite(mileageRaw) ? mileageRaw : null,
-          engine_hours:
-            typeof engineHoursRaw === "number" && Number.isFinite(engineHoursRaw)
-              ? engineHoursRaw
-              : null,
           category_slug: l.category_slug,
           attributes: attrs,
           sold_at: l.sold_at,

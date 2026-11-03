@@ -5,7 +5,6 @@ import {
   DEFAULT_FIELD_GROUPS,
   resolveWizardPages,
 } from "@/features/listing-creation/category-flows";
-import { BOAT_FACTS_AVAILABLE } from "./boat-facts";
 import { FIELD_GROUP_REGISTRY, fieldGroupsForKeys, pageLabel } from "./registry";
 
 it("klassifiserer alle feltgrupper etter publiseringsformål", () => {
@@ -21,9 +20,6 @@ it("klassifiserer alle feltgrupper etter publiseringsformål", () => {
     "category-attributes": "requiredToPublish",
     condition: "requiredToPublish",
     price: "requiredToPublish",
-    // boat-facts er en privat søm: i kaupet_open følger båt den generiske
-    // kategorien uten spesialgruppen (BOAT_FACTS_AVAILABLE = false).
-    ...(BOAT_FACTS_AVAILABLE ? { "boat-facts": "requiredToPublish" } : {}),
     "description-keywords": "requiredToPublish",
     delivery: "requiredToPublish",
     location: "recommendedForTrust",
