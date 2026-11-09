@@ -94,7 +94,7 @@
     "embla-carousel-react": "^8.6.0",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.66.0",
-    "postgres": "3.4.9",
+    "postgres": "4.1.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-day-picker": "^10.0.2",
