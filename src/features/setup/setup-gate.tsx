@@ -1,7 +1,7 @@
 // kaupet_open: oppstartsveiviseren. Rotruten viser den i stedet for appen når
 // Supabase ikke er konfigurert eller databasen mangler admin. Er konfigurasjonen
 // komplett, vises appen som vanlig.
-import { useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useState, type FormEvent, type ReactNode } from "react";
 import { z } from "zod";
 
 import { BrandWordmark } from "@/components/brand-mark";
@@ -24,8 +24,17 @@ export function SetupGate({ status, children }: { status: SetupStatus; children:
   return status ? <SetupWizard status={status} /> : children;
 }
 
-type Step = "intro" | "manuelt" | "supabase" | "admin" | "layout" | "vilkar" | "epost" | "ferdig";
-const STEPS = 7;
+type Step =
+  | "intro"
+  | "manuelt"
+  | "supabase"
+  | "admin"
+  | "layout"
+  | "mobilapp"
+  | "vilkar"
+  | "epost"
+  | "ferdig";
+const STEPS = 8;
 
 // Hvor Supabase-instansen kjører. Valget styrer bare veiledningen: målet er
 // alltid miljøvariablene på serveren, aldri en adresse fra nettleseren.
@@ -224,6 +233,7 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
   const [serviceRoleKey, setServiceRoleKey] = useState("");
   const [admin, setAdmin] = useState({ displayName: "", email: "", password: "" });
   const [layout, setLayout] = useState<LayoutId>("hvit");
+  const [nativeApp, setNativeApp] = useState(false);
   const [legalPages, setLegalPages] = useState(false);
   const [email, setEmail] = useState<EmailForm>({
     provider: "ingen",
@@ -324,13 +334,42 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
               <StepHeading title="Velkommen til kaupet_open">
                 kaupet_open består av all kjernefunksjonalitet fra kaupet.no, slik at du enkelt kan
                 bygge din egen markedsplass, eller utforske kjernekomponentene som driver kaupet.no.
+              </StepHeading>
+              <p className="text-sm text-muted-foreground">
                 kaupet_open er til for et fritt og åpent internett. Fordi alle tjenester blir bedre
                 når flere kan se hvordan det virker, foreslå forbedringer og lage sin egen variant.
-              </StepHeading>
+                Bli kjent med arkitekturen og hvordan du kan bygge videre på kaupet_open på{" "}
+                <a
+                  className="text-primary underline"
+                  href="https://kaupet.no/developer/open"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  kaupet.no/developer/open
+                </a>
+              </p>
               <div className="space-y-1 rounded-md border border-border bg-muted p-3 text-sm">
                 <p className="font-medium">kaupet_open er lisensiert under AGPL-3.0.</p>
                 <p className="text-muted-foreground">
-                  Vilkårene står i LICENSE og NOTICE i kildekoden.
+                  Vilkårene står i{" "}
+                  <a
+                    className="text-primary underline"
+                    href="https://github.com/Kaupet/kaupet_open/blob/main/LICENSE"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    LICENSE
+                  </a>{" "}
+                  og{" "}
+                  <a
+                    className="text-primary underline"
+                    href="https://github.com/Kaupet/kaupet_open/blob/main/NOTICE"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    NOTICE
+                  </a>{" "}
+                  i kildekoden.
                 </p>
               </div>
               <p className="text-sm text-muted-foreground">
@@ -347,6 +386,26 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
               <StepHeading title="Koble til Supabase" step={1}>
                 kaupet_open lagrer alt i en Supabase-database du eier. Hvor skal den kjøre?
               </StepHeading>
+              {envMissing && !!status.missing?.length && (
+                <div
+                  role="alert"
+                  className="space-y-2 rounded-md border border-destructive p-3 text-sm"
+                >
+                  <p className="font-medium">
+                    Serveren mangler{" "}
+                    {status.missing.map((name, i, all) => (
+                      <Fragment key={name}>
+                        {i > 0 && (i === all.length - 1 ? " og " : ", ")}
+                        <code>{name}</code>
+                      </Fragment>
+                    ))}
+                    .
+                  </p>
+                  <p className="text-muted-foreground">
+                    Alle verdiene under må være satt før veiviseren kan fortsette.
+                  </p>
+                </div>
+              )}
               {!envMissing && !supabaseConfigured && (
                 <div
                   role="alert"
@@ -399,8 +458,10 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
                   <li key={i}>{text}</li>
                 ))}
                 <li>
-                  Legg verdiene i <code>.env</code> eller som miljøvariabler hos verten, og start
-                  serveren på nytt.
+                  Legg alle verdiene i <code>.env</code> eller som miljøvariabler hos verten, også{" "}
+                  <code>SUPABASE_SERVICE_ROLE_KEY</code>, og start serveren på nytt. Senere i
+                  veiviseren limer du inn service role-nøkkelen én gang til for å bekrefte at du
+                  eier databasen.
                 </li>
               </ol>
               <EnvBlock text={HOSTS.find((h) => h.id === host)!.env} />
@@ -519,7 +580,7 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
           )}
 
           {step === "layout" && (
-            <form onSubmit={next("vilkar")} className="space-y-5">
+            <form onSubmit={next("mobilapp")} className="space-y-5">
               <StepHeading title="Layout" step={4}>
                 Velg et utgangspunkt. Stilene ligger i <code>src/brand.css</code>, så du kan bygge
                 videre på det du velger.
@@ -556,9 +617,40 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
             </form>
           )}
 
+          {step === "mobilapp" && (
+            <form onSubmit={next("vilkar")} className="space-y-5">
+              <StepHeading title="Mobilapp" step={5}>
+                Skal markedsplassen også være tilgjengelig som app for iOS og Android? Appen bruker
+                samme tjeneste som nettleseren og får en egen bunnmeny tilpasset berøring.
+              </StepHeading>
+              <fieldset className="grid gap-3">
+                <legend className="sr-only">Tilgjengelig som mobilapp</legend>
+                {[
+                  { value: false, title: "Nei, bare nettleser" },
+                  { value: true, title: "Ja, ta med appoppsett og byggeguide" },
+                ].map((option) => (
+                  <label
+                    key={option.title}
+                    className="grid min-h-12 cursor-pointer grid-cols-[auto_1fr] items-center gap-x-3 rounded-lg border border-border p-3 has-[:checked]:border-primary has-[:checked]:ring-2 has-[:checked]:ring-ring has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                  >
+                    <input
+                      type="radio"
+                      name="native-app"
+                      className="size-4 accent-primary"
+                      checked={nativeApp === option.value}
+                      onChange={() => setNativeApp(option.value)}
+                    />
+                    <span className="font-medium">{option.title}</span>
+                  </label>
+                ))}
+              </fieldset>
+              <Nav onBack={back("layout")} submit="Neste" />
+            </form>
+          )}
+
           {step === "vilkar" && (
             <form onSubmit={next("epost")} className="space-y-5">
-              <StepHeading title="Vilkår og personvern" step={5}>
+              <StepHeading title="Vilkår og personvern" step={6}>
                 Skal tjenesten ha sider for brukervilkår og personvernerklæring? Sidene lages tomme,
                 og teksten legger du selv inn i <code>src/components/legal/</code>. Med sidene må
                 nye brukere godta vilkårene og personvernerklæringen for å registrere seg.
@@ -582,13 +674,13 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
                   </label>
                 ))}
               </fieldset>
-              <Nav onBack={back("layout")} submit="Neste" />
+              <Nav onBack={back("mobilapp")} submit="Neste" />
             </form>
           )}
 
           {step === "epost" && (
             <form onSubmit={onEmail} className="space-y-5" noValidate>
-              <StepHeading title="E-post" step={6}>
+              <StepHeading title="E-post" step={7}>
                 Supabase Auth bruker e-post til å bekrefte nye kontoer og tilbakestille passord. Det
                 er frivillig: uten e-post slipper brukerne inn uten bekreftelse, og «Glemt passord?»
                 vises ikke.
@@ -681,7 +773,7 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
 
           {step === "ferdig" && (
             <>
-              <StepHeading title="Nesten ferdig" step={7}>
+              <StepHeading title="Nesten ferdig" step={8}>
                 {hasAdmin ? "Databasen var allerede satt opp." : "Admin-kontoen er opprettet."} Legg
                 til linjene i .env og bygg på nytt for å ta i bruk valgene.
               </StepHeading>
@@ -706,12 +798,71 @@ function SetupWizard({ status }: { status: NonNullable<SetupStatus> }) {
                   Kategorier.
                 </p>
               )}
+              {nativeApp && <NativeBuildGuide />}
               <Button onClick={() => window.location.assign("/auth")}>Logg inn</Button>
             </>
           )}
         </section>
       </div>
     </main>
+  );
+}
+
+function NativeBuildGuide() {
+  return (
+    <section aria-labelledby="native-build-heading" className="space-y-3">
+      <h2 id="native-build-heading" className="font-medium">
+        Bygg mobilappen
+      </h2>
+      <ol className="list-decimal space-y-3 pl-5 text-sm text-muted-foreground">
+        <li>
+          Sett tjenestens endelige HTTPS-adresse i <code>VITE_SITE_URL</code> og sett opp
+          Auth-viderekoblinger i Supabase. Bygg og publiser nettjenesten på adressen først.
+        </li>
+        <li>
+          Legg disse linjene i <code>.env</code> i prosjektmappen. Bruk ditt eget appnavn og en unik
+          app-ID basert på domenet ditt. Appadressen skal peke på det samme HTTPS-domenet.
+          <div className="mt-2">
+            <EnvBlock
+              filename="native.env"
+              text={
+                'CAPACITOR_APP_ID="org.example.marked"\nCAPACITOR_APP_NAME="Min markedsplass"\nCAPACITOR_APP_URL="https://marked.example.org"\n'
+              }
+            />
+          </div>
+        </li>
+        <li>
+          <strong>iOS.</strong> Installer Xcode på en Mac. Kjør{" "}
+          <code>bun run cap add ios --packagemanager SPM</code>, deretter{" "}
+          <code>bun run cap open ios</code>. Legg til <code>NSCameraUsageDescription</code>,{" "}
+          <code>NSPhotoLibraryUsageDescription</code> og{" "}
+          <code>NSPhotoLibraryAddUsageDescription</code> i appens <code>Info.plist</code> med
+          forklaring på bildebruken, og <code>NSLocationWhenInUseUsageDescription</code> med
+          forklaring på posisjonsbruken. Velg en simulator og trykk Run. For distribusjon velger du
+          signeringsteam og bruker Product → Archive.
+        </li>
+        <li>
+          <strong>Android.</strong> Installer Android Studio med Android SDK. Kjør{" "}
+          <code>bun run cap add android</code>, deretter <code>bun run cap open android</code>. Legg
+          til tillatelsene <code>ACCESS_COARSE_LOCATION</code> og <code>ACCESS_FINE_LOCATION</code>{" "}
+          i <code>AndroidManifest.xml</code> for posisjonsbruken. Velg en emulator og trykk Run. For
+          distribusjon velger du Build → Generate Signed App Bundle or APK.
+        </li>
+        <li>
+          Test innlogging, bilder og navigasjon på begge plattformer. Når du endrer
+          Capacitor-oppsettet, kjør <code>bun run cap sync</code> og bygg de installerte
+          plattformene på nytt.
+        </li>
+      </ol>
+      <a
+        className="text-sm text-primary underline"
+        href="https://capacitorjs.com/docs/getting-started/environment-setup"
+        target="_blank"
+        rel="noreferrer"
+      >
+        Verktøykrav for Capacitor
+      </a>
+    </section>
   );
 }
 

@@ -6,7 +6,8 @@
     "vite.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",
-    "eslint.config.js"
+    "eslint.config.js",
+    "capacitor.config.ts"
   ],
   "compilerOptions": {
     "target": "ES2022",

@@ -1,11 +1,28 @@
+import {
+  INBOX_MEMBER_COLUMNS,
+  INBOX_RELATION,
+  queryModerationInbox,
+} from "@/features/moderation-threads";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
+import { useIsModerationStaff } from "@/hooks/use-user-roles";
 import { useForegroundRefresh } from "@/hooks/use-foreground-refresh";
 import { isUnread } from "@/lib/unread";
 import { lastConversationMessages } from "@/lib/conversation-messages";
+
+type InboxSummaryRow = {
+  id: string;
+  last_message_at: string;
+  buyer_id: string;
+  seller_id: string;
+  buyer_last_read_at: string | null;
+  seller_last_read_at: string | null;
+  moderation_user_id?: string | null;
+  moderation_last_read_at?: string | null;
+};
 
 export type ConvSummary = {
   id: string;
@@ -22,27 +39,38 @@ export function useUnreadConversationsCount(): number {
   const { user } = useAuth();
   const qc = useQueryClient();
 
+  const { data: isModerationStaff } = useIsModerationStaff();
   const { data, refetch } = useQuery({
     queryKey: ["unread-conversations", user?.id],
     enabled: !!user,
+    // Realtime følger bare kjøper og selger. Moderatorer poller også uten tråder,
+    // ellers merker de ikke at en kollega har lagt dem til.
+    refetchInterval: isModerationStaff ? 30_000 : false,
     queryFn: async (): Promise<ConvSummary[]> => {
-      const { data: convs, error } = await supabase
-        .from("conversations")
-        .select(
-          "id, last_message_at, buyer_id, seller_id, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at",
-        )
-        .or(
-          `and(buyer_id.eq.${user!.id},buyer_deleted_at.is.null),and(seller_id.eq.${user!.id},seller_deleted_at.is.null)`,
-        );
+      const { data: convs, error } = await queryModerationInbox<InboxSummaryRow>(
+        user!.id,
+        false,
+        (filter) =>
+          supabase
+            .from(INBOX_RELATION)
+            .select(
+              `id${INBOX_MEMBER_COLUMNS}, last_message_at, buyer_id, seller_id, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at`,
+            )
+            .or(filter),
+      );
       if (error) throw error;
-      const ids = (convs ?? []).map((c) => c.id);
+      const ids = convs.map((c) => c.id);
       if (ids.length === 0) return [];
       const messages = await lastConversationMessages(ids);
-      return (convs ?? []).map((c) => ({
+      return convs.map((c) => ({
         id: c.id,
         last_message_at: c.last_message_at,
         last_sender_id: messages.get(c.id)?.sender_id ?? null,
-        my_last_read_at: c.buyer_id === user!.id ? c.buyer_last_read_at : c.seller_last_read_at,
+        my_last_read_at: c.moderation_user_id
+          ? (c.moderation_last_read_at ?? null)
+          : c.buyer_id === user!.id
+            ? c.buyer_last_read_at
+            : c.seller_last_read_at,
       }));
     },
   });

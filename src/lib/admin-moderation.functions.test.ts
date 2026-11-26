@@ -26,9 +26,18 @@ vi.mock("@tanstack/react-start", () => ({
 vi.mock("@/integrations/supabase/auth-middleware", () => ({ requireSupabaseAuth: vi.fn() }));
 vi.mock("@/lib/admin-auth.server", () => ({ requireAdminRole: vi.fn() }));
 vi.mock("@/lib/moderator-auth.server", () => ({ requireAdminOrModeratorRole: vi.fn() }));
+vi.mock("@/features/moderation-threads/reported-user.server", () => ({
+  reportedAccountId: vi.fn(async (senderId: string) => senderId),
+}));
 
-import { adminDisableListing, submitReport, submitUserReport } from "./admin-moderation.functions";
+import {
+  adminDisableListing,
+  adminEnableListing,
+  submitReport,
+  submitUserReport,
+} from "./admin-moderation.functions";
 import { requireAdminRole } from "./admin-auth.server";
+import { requireAdminOrModeratorRole } from "./moderator-auth.server";
 
 const sender = "11111111-1111-4111-8111-111111111111";
 const messageId = "22222222-2222-4222-8222-222222222222";
@@ -153,7 +162,7 @@ describe("rapportering av meldinger og bud", () => {
       submitReport({ data: { listingId: messageId, reason: "Spam" } }),
     ).rejects.toThrow();
   });
-  it("krever administrator før annonsen deaktiveres", async () => {
+  it.skipIf(EDITION === "open")("krever administrator før annonsen deaktiveres", async () => {
     const id = messageId;
     vi.mocked(requireAdminRole).mockRejectedValueOnce(new Error("Mangler administratorrolle"));
     await expect(adminDisableListing({ data: { id, reason: "Brudd på vilkår" } })).rejects.toThrow(
@@ -167,9 +176,44 @@ describe("rapportering av meldinger og bud", () => {
         ok: true,
       },
     );
-    expect(state.rpc).toHaveBeenCalledWith("admin_disable_listing", {
+    expect(state.rpc).toHaveBeenCalledWith("moderation_disable_listing", {
       _id: id,
       _reason: "Brudd på vilkår",
     });
+  });
+});
+
+describe("oppheving av annonseblokkering", () => {
+  it("krever administrator- eller moderatorrolle før RPC-kallet", async () => {
+    vi.mocked(requireAdminOrModeratorRole).mockRejectedValueOnce(new Error("Ikke autorisert"));
+    await expect(adminEnableListing({ data: { id: messageId } })).rejects.toThrow(
+      "Ikke autorisert",
+    );
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+  it.skipIf(EDITION === "open")("lar moderator aktivere gjennom eksisterende RPC", async () => {
+    await expect(adminEnableListing({ data: { id: messageId } })).resolves.toEqual({ ok: true });
+    expect(requireAdminOrModeratorRole).toHaveBeenCalledWith(
+      { from: state.from, rpc: state.rpc },
+      "reporter",
+    );
+    expect(state.rpc).toHaveBeenCalledWith("moderation_enable_listing", { _id: messageId });
+  });
+  it("avviser ugyldig ID før rolle- og databasetilgang", () => {
+    expect(() => adminEnableListing({ data: { id: "ugyldig" } })).toThrow();
+    expect(requireAdminOrModeratorRole).not.toHaveBeenCalled();
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["42501", "Moderatorer kan ikke oppheve blokkering av egne annonser", "egen bedrift"],
+    ["23514", "Brukeren kan ikke publisere annonser", "sperret"],
+    ["P0001", "Annonsen finnes ikke eller er ikke deaktivert", "allerede aktiv"],
+  ])("forklarer forventet avvisning %s", async (code, message, expected) => {
+    state.rpc.mockResolvedValueOnce({ error: { code, message } });
+    await expect(adminEnableListing({ data: { id: messageId } })).rejects.toThrow(expected);
+  });
+  it("melder feil når databasen avviser aktivering", async () => {
+    state.rpc.mockResolvedValueOnce({ error: new Error("database unavailable") });
+    await expect(adminEnableListing({ data: { id: messageId } })).rejects.toThrow();
   });
 });

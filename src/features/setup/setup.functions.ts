@@ -18,6 +18,8 @@ export type SetupStatus = {
   configuredUrl: string | null;
   /** SUPABASE_DB_URL er satt, så veiviseren kan kjøre migrasjonene selv. */
   canMigrate: boolean;
+  /** Navnene (ikke verdiene) på servervariablene som mangler. */
+  missing?: string[];
 } | null;
 
 type Env = Partial<Record<string, string>>;
@@ -59,7 +61,10 @@ async function readStatus(env: Env = process.env): Promise<SetupStatus> {
   if (complete) return null;
   const { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SUPABASE_SERVICE_ROLE_KEY } = env;
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY || !SUPABASE_SERVICE_ROLE_KEY) {
-    return { reason: "mangler-miljo", configuredUrl: null, canMigrate: false };
+    const missing = (
+      ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY"] as const
+    ).filter((name) => !env[name]);
+    return { reason: "mangler-miljo", configuredUrl: null, canMigrate: false, missing };
   }
   try {
     const state = await probeDatabase(adminClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY));

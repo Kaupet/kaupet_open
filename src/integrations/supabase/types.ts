@@ -1255,6 +1255,10 @@ export type Database = {
         Args: { _bucket: string; _key: string }
         Returns: undefined
       }
+      release_user_rate_limit: {
+        Args: { _bucket: string; _user_id: string }
+        Returns: undefined
+      }
       request_account_deletion: { Args: { _email: string }; Returns: undefined }
       reserve_standard_upload_quota: {
         Args: { _bytes: number; _user_id: string }

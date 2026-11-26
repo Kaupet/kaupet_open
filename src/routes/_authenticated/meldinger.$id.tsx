@@ -1,3 +1,19 @@
+import {
+  deleteModerationMessage,
+  isModerationConversation,
+  MODERATION_CONVERSATION_COLUMN,
+  MODERATOR_ALIAS_QUERY_KEY,
+  moderationMembership,
+  moderationSenderName,
+  moderationThreadClosedText,
+  moderationThreadName,
+  moderationThreadStatus,
+  moderatorFirstNames,
+  moderatorSenderIds,
+  setModerationInboxState,
+  useMyModeratorAlias,
+} from "@/features/moderation-threads";
+import { ConversationListingModeration } from "@/features/moderation-threads/listing-moderation-banner";
 import { WTB_CONVERSATION_COLUMN, WTB_CONVERSATION_RELATION } from "@/features/wtb/availability";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { z } from "zod";
@@ -60,9 +76,14 @@ import { useConversationOffers } from "@/components/meldinger/use-conversation-o
 import { messageOfferId, subscribeOfferChanges } from "@/components/meldinger/offers";
 import { ReviewForm } from "@/components/meldinger/review-form";
 import { cn } from "@/lib/utils";
-import { useBusinessMembership } from "@/features/business-account/use-business-membership";
-import { conversationOrganizations } from "@/lib/conversation-organizations";
-import { LISTING_ORGANIZATION_COLUMN, listingOrganizationId } from "@/lib/listing-business-data";
+import {
+  conversationOrganizations,
+  hasOrganizationChatAccess,
+} from "@/lib/conversation-organizations";
+import {
+  LISTING_ORGANIZATION_CHAT_COLUMNS,
+  listingOrganizationId,
+} from "@/lib/listing-business-data";
 import { TradeSafetyAdvice } from "@/components/trade-safety-advice";
 import { SITE_NAME } from "@/lib/site";
 
@@ -95,6 +116,7 @@ export const Route = createFileRoute("/_authenticated/meldinger/$id")({
 // kostnaden er begrenset: det er kun den ene åpne samtalen som poller, og
 // kun mens kanalen faktisk er nede.
 export const MESSAGES_POLL_INTERVAL_MS = 5_000;
+const MODERATION_POLL_INTERVAL_MS = 15_000;
 
 /** Skjuler bunnmenyen mens samtalen er åpen, se `.conversation-open` i
  * styles.css. Samme mønster som NativeContactBar på annonsesiden. */
@@ -107,10 +129,6 @@ function ConversationOpen() {
 }
 
 function ConversationPage() {
-  const { data: businessMembership } = useBusinessMembership();
-  const isBusinessSuperuser =
-    businessMembership?.role === "superuser" ||
-    businessMembership?.locations.some((location) => location.permissions.chatAccess === "all");
   const native = useIsNative();
   const formFactor = useFormFactor();
   const isTablet = formFactor === "tablet";
@@ -183,7 +201,7 @@ function ConversationPage() {
     isError: convIsError,
     error: convError,
   } = useQuery({
-    queryKey: ["conversation", id, isBusinessSuperuser],
+    queryKey: ["conversation", id],
     enabled: !!user,
     // Leserkvitteringer (buyer/seller_last_read_at) kommer via samme
     // realtime-kanal som meldingene (UPDATE på conversations) — samme
@@ -191,22 +209,27 @@ function ConversationPage() {
     // Andre samtalers oppheving gir ingen hendelse her. Poll bare mens
     // deres reservasjon hindrer denne kjøperen i å gi bud.
     refetchInterval: (query) =>
-      realtimeDown ||
-      (!conversationHoldsReservation(query.state.data) &&
-        isReservedNow(listingReservedUntil(query.state.data?.listing)))
-        ? MESSAGES_POLL_INTERVAL_MS
-        : false,
+      query.state.data?.is_moderation
+        ? MODERATION_POLL_INTERVAL_MS
+        : realtimeDown ||
+            (!conversationHoldsReservation(query.state.data) &&
+              isReservedNow(listingReservedUntil(query.state.data?.listing)))
+          ? MESSAGES_POLL_INTERVAL_MS
+          : false,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("conversations")
         .select(
-          `id, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, buyer_last_read_at, seller_last_read_at${CONVERSATION_RESERVATION_COLUMN},
-           listing:listings(id${LISTING_ORGANIZATION_COLUMN}, kaupet_code, title, price_nok, is_free, status, category_id${LISTING_RESERVATION_COLUMN}, attributes, listing_images(storage_path, sort_order), categories(slug))${WTB_CONVERSATION_RELATION}`,
+          `id${MODERATION_CONVERSATION_COLUMN}, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, buyer_last_read_at, seller_last_read_at${CONVERSATION_RESERVATION_COLUMN},
+           listing:listings(id${LISTING_ORGANIZATION_CHAT_COLUMNS}, kaupet_code, title, price_nok, is_free, status, category_id${LISTING_RESERVATION_COLUMN}, attributes, listing_images(storage_path, sort_order), categories(slug))${WTB_CONVERSATION_RELATION}`,
         )
         .eq("id", id)
         .maybeSingle();
       if (error) throw error;
       if (!data) throw new Error("Samtalen finnes ikke");
+      const isModeration = isModerationConversation(data);
+      const moderationMember = isModeration ? await moderationMembership(id, user!.id) : undefined;
+      const threadStatus = isModeration ? await moderationThreadStatus(id) : null;
       const rawListing = data.listing;
       const listing = Array.isArray(rawListing) ? rawListing[0] : rawListing;
       // Samtaler om kjøpsønsker har et kjøpsønske i stedet for listing_id.
@@ -214,7 +237,7 @@ function ConversationPage() {
         .wtb_listing;
       const wtbListing = (Array.isArray(rawWtb) ? rawWtb[0] : rawWtb) ?? null;
       const orgId = listingOrganizationId(listing);
-      const isBusinessSeller = isBusinessSuperuser && businessMembership?.organization.id === orgId;
+      const isBusinessSeller = await hasOrganizationChatAccess(listing, data.seller_id, user!.id);
       const viewerIsSeller = user!.id === data.seller_id || isBusinessSeller;
       const otherId = viewerIsSeller ? data.buyer_id : data.seller_id;
       const { data: profile } = await supabase
@@ -240,6 +263,9 @@ function ConversationPage() {
         listing,
         wtbListing,
         isBusinessSeller,
+        is_moderation: isModeration,
+        moderationMember,
+        threadStatus,
         other: profile,
         otherOrganization,
         otherDeleted,
@@ -260,17 +286,28 @@ function ConversationPage() {
   } = useInfiniteQuery({
     queryKey: ["messages", id],
     enabled: !!user,
-    refetchInterval: realtimeDown ? MESSAGES_POLL_INTERVAL_MS : false,
+    // Realtime følger bare kjøper og selger, så moderatordeltakere må polle.
+    refetchInterval: realtimeDown
+      ? MESSAGES_POLL_INTERVAL_MS
+      : conv?.moderationMember
+        ? MODERATION_POLL_INTERVAL_MS
+        : false,
     initialPageParam: null as MessageCursor | null,
     queryFn: ({ pageParam }) => conversationMessagesPage(id, pageParam),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
   });
+  const moderatorAlias = useMyModeratorAlias();
   const messages = useMemo(() => {
     const byId = new Map(messageData?.pages.flatMap((page) => page.messages).map((m) => [m.id, m]));
-    return [...byId.values()].sort(
-      (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
-    );
-  }, [messageData]);
+    // En moderator ser sine egne meldinger som egne, selv om de er lagret med aliaset.
+    return [...byId.values()]
+      .map((m) =>
+        moderatorAlias && userId && m.sender_id === moderatorAlias
+          ? { ...m, sender_id: userId }
+          : m,
+      )
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  }, [messageData, moderatorAlias, userId]);
   const latestMessage = messages.at(-1);
 
   // ponytail: henter alle reaksjoner i samtalen, ikke per side; pagineres
@@ -354,6 +391,7 @@ function ConversationPage() {
       conv: NonNullable<typeof conv>;
       user: NonNullable<typeof user>;
     }) => {
+      if (readConv.moderationMember) return setModerationInboxState(id);
       const update =
         readConv.seller_id === readUser.id || readConv.isBusinessSeller
           ? { seller_last_read_at: readAt }
@@ -481,7 +519,6 @@ function ConversationPage() {
             seller_last_read_at: string | null;
           };
           let reservationChanged = false;
-          // Prefiks: den aktive nøkkelen inneholder også isBusinessSuperuser.
           queryClient.setQueriesData<typeof conv>({ queryKey: ["conversation", id] }, (prev) => {
             if (!prev) return prev;
             if (conversationHoldsReservation(prev) !== conversationHoldsReservation(updated))
@@ -619,6 +656,9 @@ function ConversationPage() {
       );
       void queryClient.invalidateQueries({ queryKey: ["messages", vars.conversationId] });
       if (context?.previewUrl) URL.revokeObjectURL(context.previewUrl);
+      if (conv?.moderationMember) {
+        queryClient.invalidateQueries({ queryKey: MODERATOR_ALIAS_QUERY_KEY });
+      }
       queryClient.invalidateQueries({ queryKey: ["my-conversations"] });
       void import("@/lib/haptics").then((m) => m.hapticSelection());
       if (sendAttemptRef.current === vars.attempt) sendAttemptRef.current = null;
@@ -680,6 +720,10 @@ function ConversationPage() {
 
   const deleteMessageMutation = useMutation({
     mutationFn: async (messageId: string) => {
+      if (conv?.moderationMember) {
+        await deleteModerationMessage(messageId);
+        return messageId;
+      }
       const { error } = await supabase
         .from("messages")
         .update({ deleted_at: new Date().toISOString() })
@@ -807,19 +851,34 @@ function ConversationPage() {
       (b) => b.blocker_id === otherId && (b.scope === "all" || b.conversation_id === id),
     )
   );
-  const disabled = !!conv?.otherDeleted || !!conv?.otherPending || iBlocked || theyBlockedMe;
-  const disabledPlaceholder =
-    conv?.otherDeleted || conv?.otherPending
+  const moderationSender = !!conv?.is_moderation && isSeller;
+  const otherUnavailable = !moderationSender && (!!conv?.otherDeleted || !!conv?.otherPending);
+  // En privat blokkering gjelder ikke modereringstråden, heller ikke for moderatoren.
+  const privateBlocked = !conv?.is_moderation && iBlocked;
+  const privatelyBlockedByOther = !conv?.is_moderation && theyBlockedMe;
+  const threadClosedText = moderationThreadClosedText(
+    conv?.threadStatus ?? null,
+    conv?.seller_id === user?.id,
+  );
+  const disabled =
+    otherUnavailable || privateBlocked || privatelyBlockedByOther || !!threadClosedText;
+  const disabledPlaceholder = threadClosedText
+    ? "Samtalen er stengt"
+    : otherUnavailable
       ? "Du kan ikke svare denne brukeren"
-      : iBlocked
+      : privateBlocked
         ? "Du har blokkert denne samtalen"
-        : theyBlockedMe
+        : privatelyBlockedByOther
           ? "Du kan ikke sende meldinger i denne samtalen"
           : "Skriv en melding…";
 
   const otherName =
     conv?.otherOrganization?.name ??
-    (conv?.otherDeleted ? "Slettet bruker" : (conv?.other?.display_name ?? "Ukjent bruker"));
+    (moderationSender
+      ? moderationThreadName()
+      : conv?.otherDeleted
+        ? "Slettet bruker"
+        : (conv?.other?.display_name ?? "Ukjent bruker"));
   const offerListing = conv?.listing
     ? {
         id: conv.listing.id,
@@ -830,13 +889,20 @@ function ConversationPage() {
         holdsReservation: conversationHoldsReservation(conv),
       }
     : null;
+  // Hver moderatormelding viser hvem som skrev den, så meldingene ikke ser ut som selgerens.
+  const moderatorIds = conv?.is_moderation ? moderatorSenderIds(messages) : [];
+  const { data: moderatorNames } = useQuery({
+    queryKey: ["moderator-names", id, moderatorIds],
+    enabled: moderatorIds.length > 0,
+    queryFn: () => moderatorFirstNames(moderatorIds),
+  });
   const offers = useConversationOffers({
     conversationId: id,
     userId,
     buyerId: conv?.buyer_id,
     isSeller,
     otherName,
-    listing: offerListing,
+    listing: conv?.is_moderation ? null : offerListing,
     priceNok: conversationPriceKr,
     canAct: !disabled,
     sold: !!sale,
@@ -863,7 +929,7 @@ function ConversationPage() {
   }
 
   const step =
-    TRADE_AVAILABLE && conv?.listing_id
+    TRADE_AVAILABLE && conv?.listing_id && !conv.is_moderation
       ? tradeStep({
           hasMessages: messages.length > 0,
           agreed: offers.agreed,
@@ -887,14 +953,18 @@ function ConversationPage() {
           ? {
               id: otherId,
               name: otherName,
-              avatarUrl: conv.other?.avatar_url ?? null,
-              deleted: !!conv.otherDeleted,
+              avatarUrl: moderationSender ? null : (conv.other?.avatar_url ?? null),
+              deleted: !!conv.otherDeleted && !moderationSender,
+              moderation: moderationSender,
             }
           : null,
         otherOrganization: conv.otherOrganization,
         // Salg finnes bare for salgsannonser, ikke kjøpsønsker.
         sale:
-          TRADE_AVAILABLE && conv.listing_id && !personalSellerControlsDisabled
+          TRADE_AVAILABLE &&
+          conv.listing_id &&
+          !conv.is_moderation &&
+          !personalSellerControlsDisabled
             ? {
                 isSeller,
                 hasMessages: messages.length > 0,
@@ -910,12 +980,19 @@ function ConversationPage() {
               }
             : null,
         conversationId: id,
+        // En blokkering i modereringstråden traff bare trådeieren og stengte selgerens
+        // svar. Rapportering ligger også på meldingene; en eksisterende blokkering kan oppheves.
         showBlockMenu:
-          !!otherId && !conv.otherDeleted && !theyBlockedMe && !personalSellerControlsDisabled,
+          !!otherId &&
+          !conv.otherDeleted &&
+          !theyBlockedMe &&
+          !personalSellerControlsDisabled &&
+          (!conv.is_moderation || !!iBlocked),
       }
     : null;
   const showReviewForm =
     !!conv?.listing_id &&
+    !conv.is_moderation &&
     saleIsForThisConversation &&
     iAmInSale &&
     (!conv.otherDeleted || !!conv.otherOrganization) &&
@@ -931,16 +1008,17 @@ function ConversationPage() {
       }}
     >
       <ConversationHeader
+        moderationSender={moderationSender}
         native={native}
         loading={convLoading}
         title={conv?.listing?.title ?? conv?.wtbListing?.title ?? null}
         coverUrl={coverUrl}
         priceLabel={priceLabel}
         other={{
-          id: conv?.otherDeleted ? null : otherId,
+          id: conv?.otherDeleted || moderationSender ? null : otherId,
           name: otherName,
-          avatarUrl: conv?.other?.avatar_url ?? null,
-          deleted: !!conv?.otherDeleted,
+          avatarUrl: moderationSender ? null : (conv?.other?.avatar_url ?? null),
+          deleted: !!conv?.otherDeleted && !moderationSender,
         }}
         otherOrganization={conv?.otherOrganization ?? null}
         backTo={isTablet || isDesktop ? null : source === "business" ? "/bedrift" : "/meldinger"}
@@ -948,7 +1026,7 @@ function ConversationPage() {
         step={isDesktop || (native && keyboardVisible) ? undefined : step}
       />
 
-      {conv && (conv.otherDeleted || conv.otherPending) && (
+      {conv && !moderationSender && (conv.otherDeleted || conv.otherPending) && (
         <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground">
           {conv.otherDeleted
             ? "Denne brukeren har slettet kontoen sin. Du kan ikke lenger sende meldinger i denne samtalen."
@@ -956,10 +1034,10 @@ function ConversationPage() {
         </p>
       )}
 
-      {conv && iBlocked && (
+      {conv && privateBlocked && (
         <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground">
           {iBlockedAll
-            ? `Du har blokkert ${conv.other?.display_name ?? "denne brukeren"}. Du kan oppheve blokkeringen under «Blokker og rapporter» ved annonsen eller fra profilen din.`
+            ? `Du har blokkert ${otherName}. Du kan oppheve blokkeringen under «Blokker og rapporter» ved annonsen eller fra profilen din.`
             : "Du har blokkert denne samtalen. Du kan oppheve blokkeringen under «Blokker og rapporter» ved annonsen eller fra profilen din."}
         </p>
       )}
@@ -968,6 +1046,23 @@ function ConversationPage() {
         <p className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground">
           Du kan ikke sende meldinger i denne samtalen.
         </p>
+      )}
+
+      {threadClosedText && (
+        <p
+          role="status"
+          className="shrink-0 border-b border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground"
+        >
+          {threadClosedText}
+        </p>
+      )}
+
+      {conv?.is_moderation && conv.listing && (
+        <ConversationListingModeration
+          listing={conv.listing}
+          conversationId={id}
+          ownListing={conv.seller_id === user?.id || isBusinessSeller}
+        />
       )}
 
       {offers.banner}
@@ -1026,7 +1121,7 @@ function ConversationPage() {
             messages,
             user?.id ?? "",
             conv && user
-              ? conv.buyer_id === user.id
+              ? conv.moderationMember || conv.buyer_id === user.id
                 ? conv.seller_last_read_at
                 : conv.buyer_last_read_at
               : null,
@@ -1034,11 +1129,15 @@ function ConversationPage() {
             {
               reactions,
               otherName,
-              canReact: !disabled,
+              canReact: !disabled && !conv?.moderationMember,
               onOpenActions: setActionsFor,
               onReact: (m, emoji) => reactMutation.mutate({ messageId: m.id, emoji }),
               renderOffer: offers.renderOffer,
             },
+            (m) =>
+              moderatorIds.includes(m.sender_id)
+                ? moderationSenderName(moderatorNames?.get(m.sender_id))
+                : null,
           )
         )}
         {showReviewForm && (
@@ -1096,8 +1195,16 @@ function ConversationPage() {
             reactions.get(actionsFor.id)?.find((r) => r.user_id === user?.id)?.emoji) ??
           null
         }
-        canReact={!disabled && !(actionsFor && messageOfferId(actionsFor))}
-        reportUserId={otherId && !conv?.otherDeleted ? otherId : null}
+        canReact={
+          !disabled && !conv?.moderationMember && !(actionsFor && messageOfferId(actionsFor))
+        }
+        reportUserId={
+          conv?.is_moderation
+            ? (actionsFor?.sender_id ?? null)
+            : otherId && !conv?.otherDeleted
+              ? otherId
+              : null
+        }
         onReact={(m, emoji) => reactMutation.mutate({ messageId: m.id, emoji })}
         onDelete={(messageId) => deleteMessageMutation.mutate(messageId)}
       />
@@ -1127,7 +1234,7 @@ function ConversationPage() {
     return (
       <div className="flex" style={{ height: "calc(100dvh - var(--site-header-h))" }}>
         <aside className="w-80 shrink-0 overflow-y-auto overscroll-contain border-r border-border">
-          <InboxPage />
+          <InboxPage headingLevel="h2" />
         </aside>
         <div className="min-w-0 flex-1">{thread}</div>
         <aside
@@ -1162,7 +1269,7 @@ function ConversationPage() {
         className="w-80 shrink-0 overflow-y-auto overscroll-contain border-r border-border"
         style={{ height: keyboardVisible ? "var(--vvh, 100vh)" : "100vh" }}
       >
-        <InboxPage />
+        <InboxPage headingLevel="h2" />
       </aside>
       <div className="min-w-0 flex-1">{thread}</div>
     </div>

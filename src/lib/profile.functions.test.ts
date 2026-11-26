@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { EDITION } from "@/lib/edition";
+
 const fromMock = vi.fn();
 
 vi.mock("@tanstack/react-start", () => ({
@@ -11,10 +13,18 @@ vi.mock("@tanstack/react-start", () => ({
   }),
   createServerFn: () => {
     let validator: (input: unknown) => unknown = (input) => input;
-    let handler: ((input: { data: unknown; context: { userId: string } }) => unknown) | undefined;
+    let handler:
+      | ((input: {
+          data: unknown;
+          context: { userId: string; supabase: { from: typeof fromMock } };
+        }) => unknown)
+      | undefined;
     const fn = (input: { data?: unknown } = {}) => {
       if (!handler) throw new Error("server handler not configured");
-      return handler({ data: validator(input.data), context: { userId: "user-id" } });
+      return handler({
+        data: validator(input.data),
+        context: { userId: "user-id", supabase: { from: fromMock } },
+      });
     };
     Object.assign(fn, {
       middleware: () => fn,
@@ -35,7 +45,7 @@ vi.mock("@/integrations/supabase/client.server", () => ({
   supabaseAdmin: { from: fromMock },
 }));
 
-import { updateOwnAvatar } from "./profile.functions";
+import { getOwnProfile, updateOwnAvatar, updateOwnProfile } from "./profile.functions";
 
 const originalSupabaseUrl = process.env.SUPABASE_URL;
 const originalR2BaseUrl = process.env.R2_PUBLIC_BASE_URL;
@@ -116,5 +126,56 @@ describe("updateOwnAvatar", () => {
       }),
     ).rejects.toThrow("Ugyldig profilbilde");
     expect(fromMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateOwnProfile", () => {
+  it.skipIf(EDITION === "open")("avviser navn som kan forveksles med en moderator", () => {
+    expect(() =>
+      updateOwnProfile({
+        data: { firstName: "Kari fra Butikken (moderator)", lastName: "", showLastName: false },
+      }),
+    ).toThrow();
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it("validerer fornavn før databaseoppdateringen", async () => {
+    expect(() =>
+      updateOwnProfile({ data: { firstName: " ", lastName: "", showLastName: false } }),
+    ).toThrow();
+    expect(fromMock).not.toHaveBeenCalled();
+  });
+
+  it("lagrer navnedetaljer for den innloggede brukeren og skjuler tomt etternavn", async () => {
+    const singleMock = vi.fn().mockResolvedValue({ data: { id: "user-id" }, error: null });
+    const eqMock = vi.fn(() => ({ select: () => ({ single: singleMock }) }));
+    const updateMock = vi.fn(() => ({ eq: eqMock }));
+    fromMock.mockReturnValue({ update: updateMock });
+    await expect(
+      updateOwnProfile({ data: { firstName: " Kari ", lastName: " ", showLastName: true } }),
+    ).resolves.toEqual({ id: "user-id" });
+    expect(fromMock).toHaveBeenCalledWith(EDITION === "open" ? "profiles" : "profile_names");
+    expect(updateMock).toHaveBeenCalledWith(
+      EDITION === "open"
+        ? { display_name: "Kari" }
+        : { first_name: "Kari", last_name: "", show_last_name: false },
+    );
+    expect(eqMock).toHaveBeenCalledWith("id", "user-id");
+  });
+});
+
+describe("getOwnProfile", () => {
+  it("leser bare den innloggede brukerens navn og profilbilde", async () => {
+    const publicProfile = { display_name: "Kari", avatar_url: null };
+    const name = { first_name: "Kari", last_name: "", show_last_name: false };
+    const singleMock = vi.fn().mockResolvedValue({
+      data: EDITION === "open" ? publicProfile : { ...name, profiles: publicProfile },
+      error: null,
+    });
+    const eqMock = vi.fn(() => ({ single: singleMock }));
+    fromMock.mockReturnValue({ select: () => ({ eq: eqMock }) });
+    await expect(getOwnProfile({})).resolves.toEqual({ ...publicProfile, ...name });
+    expect(fromMock).toHaveBeenCalledWith(EDITION === "open" ? "profiles" : "profile_names");
+    expect(eqMock).toHaveBeenCalledWith("id", "user-id");
   });
 });

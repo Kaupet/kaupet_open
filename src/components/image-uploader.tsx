@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, ChevronLeft, ChevronRight, ImagePlus, X } from "lucide-react";
+import { Camera, ChevronLeft, ChevronRight, ImagePlus, Loader2, X } from "lucide-react";
 import {
   DndContext,
   PointerSensor,
@@ -22,6 +22,7 @@ import { compressImage } from "@/lib/image-compression";
 import { isAiGeneratedImage } from "@/lib/image-metadata";
 import type { RemoteImage } from "@/features/listing-creation/draft-image-sync";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AiImageBadge, AiImageInfo } from "@/components/ai-image-info";
 import { isNative, takeNativePhoto } from "@/lib/native";
@@ -141,7 +142,11 @@ export function ImageUploader({
   const inputRef = useRef<HTMLInputElement>(null);
   const captureInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [processing, setProcessing] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const processing = processingProgress !== null;
   const aiImageCount = images.filter((image) => image.aiGenerated).length;
 
   // Revoke object URLs on unmount
@@ -154,7 +159,7 @@ export function ImageUploader({
 
   const addFiles = useCallback(
     async (files: File[]) => {
-      setProcessing(true);
+      setProcessingProgress({ done: 0, total: files.length });
       try {
         const remaining = MAX_LISTING_IMAGES - images.length;
         const limitMessage = `En annonse kan ha maksimalt ${MAX_LISTING_IMAGES} bilder.`;
@@ -165,6 +170,7 @@ export function ImageUploader({
         // Flervalg i galleriet har ingen grense, så overskuddet hoppes over.
         const skipped = files.length > remaining;
         files = files.slice(0, remaining);
+        setProcessingProgress({ done: 0, total: files.length });
         // Én fil om gangen: originalene fra galleriet kan være store, og mange
         // samtidige lesinger og komprimeringer kan få appen til å gå tom for minne.
         const compressed: File[] = [];
@@ -178,6 +184,7 @@ export function ImageUploader({
           ]);
           compressed.push(main);
           thumbs.push(thumb);
+          setProcessingProgress({ done: compressed.length, total: files.length });
         }
         const err = validateImages(compressed);
         if (err) {
@@ -196,7 +203,7 @@ export function ImageUploader({
       } catch (error) {
         showErrorToast(formatErrorMessage(error, "Kunne ikke behandle bildene. Prøv igjen."));
       } finally {
-        setProcessing(false);
+        setProcessingProgress(null);
       }
     },
     [images, onChange],
@@ -371,14 +378,36 @@ export function ImageUploader({
         </p>
       )}
 
-      {processing && (
-        <p className="text-sm font-medium text-primary" role="status" aria-live="polite">
-          Behandler bilder…
-        </p>
+      {processingProgress && (
+        <div className="space-y-3">
+          <p
+            className="flex items-center gap-2 text-sm font-medium text-primary"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" />
+            Behandler bilde {Math.min(
+              processingProgress.done + 1,
+              processingProgress.total,
+            )} av {processingProgress.total}…
+          </p>
+          <ul aria-hidden className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+            {Array.from({ length: processingProgress.total - processingProgress.done }, (_, i) => (
+              <li key={i}>
+                <Skeleton className="aspect-square w-full rounded-lg" />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {uploadProgress && (
-        <p className="text-sm font-medium text-primary" role="status" aria-live="polite">
+        <p
+          className="flex items-center gap-2 text-sm font-medium text-primary"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 aria-hidden className="size-4 animate-spin motion-reduce:animate-none" />
           Laster opp bilde {uploadProgress.done} av {uploadProgress.total}…
         </p>
       )}

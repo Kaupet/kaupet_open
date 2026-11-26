@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronLeft, User as UserIcon } from "lucide-react";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { ModerationBadge } from "@/features/moderation-threads/moderation-badge";
 import { TradeSteps } from "@/components/meldinger/trade-steps";
 import type { TradeStep } from "@/components/meldinger/trade-step";
 import { cn } from "@/lib/utils";
@@ -13,6 +14,8 @@ type Props = {
   priceLabel: string;
   other: { id: string | null; name: string; avatarUrl: string | null; deleted: boolean };
   otherOrganization: { id: string; name: string; logoUrl: string | null } | null;
+  /** Motparten er offisiell moderator, ikke en privat profil. */
+  moderationSender?: boolean;
   /** null skjuler tilbakeknappen (innboksen står ved siden av). */
   backTo: "/meldinger" | "/bedrift" | null;
   /** Åpner annonsearket. Uten den (desktop, der handelspanelet står fremme)
@@ -34,6 +37,7 @@ export function ConversationHeader({
   priceLabel,
   other,
   otherOrganization,
+  moderationSender = false,
   backTo,
   onOpenPanel,
   step,
@@ -61,6 +65,7 @@ export function ConversationHeader({
         <span className="block truncate text-xs text-muted-foreground">
           med {otherOrganization?.name ?? other.name} · {priceLabel}
         </span>
+        {moderationSender && <ModerationBadge />}
       </span>
     </>
   );
@@ -81,7 +86,9 @@ export function ConversationHeader({
         native && "pt-safe pl-safe pr-safe",
       )}
     >
-      <div className="flex h-14 items-center gap-2 px-2">
+      <div
+        className={cn("flex items-center gap-2 px-2", moderationSender ? "min-h-14 py-1" : "h-14")}
+      >
         {backTo && (
           <Link
             to={backTo}
@@ -92,23 +99,28 @@ export function ConversationHeader({
           </Link>
         )}
         {loading ? (
-          <span className="flex min-w-0 flex-1 items-center gap-3 px-1">
+          <h1 className="flex min-w-0 flex-1 items-center gap-3 px-1">
+            <span className="sr-only">Laster samtalen</span>
             <Skeleton className="size-10 shrink-0 rounded-lg" />
             <span className="flex-1 space-y-1.5">
               <Skeleton className="h-4 w-2/3" />
               <Skeleton className="h-3 w-1/3" />
             </span>
-          </span>
+          </h1>
         ) : onOpenPanel ? (
-          <button
-            type="button"
-            onClick={onOpenPanel}
-            aria-haspopup="dialog"
-            aria-label={`${title ?? "Annonsen"}, åpne annonsevalg`}
-            className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-1 transition hover:bg-muted/60"
-          >
-            {identity}
-          </button>
+          // Skriftnullstillingen beholder knappens utseende: basestilen gir h1
+          // displayfont, og knappen arver skrift fra forelderen.
+          <h1 className="flex min-w-0 flex-1 font-sans font-normal tracking-normal">
+            <button
+              type="button"
+              onClick={onOpenPanel}
+              aria-haspopup="dialog"
+              aria-label={`${title ?? "Annonsen"}, åpne annonsevalg`}
+              className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-1 transition hover:bg-muted/60"
+            >
+              {identity}
+            </button>
+          </h1>
         ) : (
           <h1 className="flex min-w-0 flex-1 items-center gap-3 px-1">{identity}</h1>
         )}

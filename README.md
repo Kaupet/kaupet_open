@@ -31,6 +31,7 @@ neste versjon.
 - Databaseskjema med RLS og tester
 - Eksempeltaksonomi med noen få kategorier
 - Oppstartsveiviser med tre startlayouter
+- Valgfritt iOS- og Android-oppsett med egen mobilnavigasjon
 
 ## Teknologi
 
@@ -73,11 +74,15 @@ neste versjon.
    hvordan for en lokal stack, et prosjekt hos Supabase eller selvdriftet
    Supabase. Med `SUPABASE_DB_URL` satt på serveren kan veiviseren kjøre
    migrasjonene i en tom database selv.
-4. Opprett den første admin-kontoen i veiviseren, og velg layout, vilkårssider
-   og e-posttjeneste.
+4. Opprett den første admin-kontoen i veiviseren, og velg layout, mobilapp,
+   vilkårssider og e-posttjeneste.
 5. Før tjenesten åpnes for brukere: følg [selvdriftsguiden](docs/SELVDRIFT.md)
    for egen lagring, SMTP, domene, planlagte jobber og sikre
    driftsinnstillinger, og gi tjenesten ditt eget navn.
+
+Ved mobilapp viser veiviseren en byggeguide for begge plattformer.
+[Mobilapp i selvdriftsguiden](docs/SELVDRIFT.md#mobilapp-med-capacitor) har de
+samme stegene hvis du allerede har en installasjon.
 
 ## Bygg videre
 

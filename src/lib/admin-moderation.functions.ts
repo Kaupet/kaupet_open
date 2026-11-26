@@ -1,3 +1,9 @@
+import {
+  disableListing,
+  disableListingWithMessage,
+  enableListing,
+} from "@/features/moderation-threads/listing-rpc";
+import { reportedAccountId } from "@/features/moderation-threads/reported-user.server";
 import { ClientError, toClientError } from "@/lib/to-client-error";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -15,15 +21,29 @@ const reason = z.string().trim().min(1, "Begrunnelse er påkrevd").max(500);
 const uuid = z.guid();
 const message = z.string().trim().min(1, "Melding er påkrevd").max(2000);
 
+// Forventede avvisninger ved aktivering.
+const ENABLE_LISTING_REJECTIONS: Record<string, { message: string; status: number }> = {
+  "42501:Moderatorer kan ikke oppheve blokkering av egne annonser": {
+    message:
+      "Du kan ikke oppheve blokkering av egne annonser eller annonser fra egen bedrift. En annen moderator må vurdere annonsen.",
+    status: 403,
+  },
+  "23514:Brukeren kan ikke publisere annonser": {
+    message: "Eieren av annonsen er sperret. Bare en administrator kan aktivere annonsen.",
+    status: 409,
+  },
+  "P0001:Annonsen finnes ikke eller er ikke deaktivert": {
+    message: "Annonsen finnes ikke lenger eller er allerede aktiv.",
+    status: 409,
+  },
+};
+
 export const adminDisableListing = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((i: unknown) => z.object({ id: uuid, reason }).parse(i))
   .handler(async ({ data, context }) => {
     await requireAdmin(context.supabase, context.userId);
-    const { error } = await context.supabase.rpc("admin_disable_listing", {
-      _id: data.id,
-      _reason: data.reason,
-    });
+    const { error } = await disableListing(context.supabase, data.id, data.reason);
     if (error) {
       throw await toClientError("database", error);
     }
@@ -34,11 +54,11 @@ export const adminEnableListing = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((i: unknown) => z.object({ id: uuid }).parse(i))
   .handler(async ({ data, context }) => {
-    await requireAdmin(context.supabase, context.userId);
-    const { error } = await context.supabase.rpc("admin_enable_listing", {
-      _id: data.id,
-    });
+    await requireAdminOrModeratorRole(context.supabase, context.userId);
+    const { error } = await enableListing(context.supabase, data.id);
     if (error) {
+      const expected = ENABLE_LISTING_REJECTIONS[`${error.code}:${error.message}`];
+      if (expected) throw new ClientError(expected.message, expected.status);
       throw await toClientError("database", error);
     }
     return { ok: true };
@@ -158,7 +178,9 @@ export const submitUserReport = createServerFn({ method: "POST" })
         .slice(0, 1000);
     }
     const { error } = await context.supabase.rpc("submit_user_report", {
-      _reported_user_id: data.reportedUserId,
+      _reported_user_id: data.messageId
+        ? await reportedAccountId(data.reportedUserId)
+        : data.reportedUserId,
       _reason: data.reason,
       _comment: comment ?? undefined,
     });
@@ -173,11 +195,12 @@ export const adminDisableListingWithMessage = createServerFn({ method: "POST" })
   .validator((i: unknown) => z.object({ id: uuid, reason, message }).parse(i))
   .handler(async ({ data, context }) => {
     await requireAdminOrModeratorRole(context.supabase, context.userId);
-    const { error } = await context.supabase.rpc("admin_disable_listing_with_message", {
-      _id: data.id,
-      _reason: data.reason,
-      _message: data.message,
-    });
+    const { error } = await disableListingWithMessage(
+      context.supabase,
+      data.id,
+      data.reason,
+      data.message,
+    );
     if (error) {
       throw await toClientError("database", error);
     }

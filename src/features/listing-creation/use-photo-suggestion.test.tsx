@@ -35,6 +35,123 @@ afterEach(() => {
 });
 
 describe("usePhotoSuggestion", () => {
+  it("blokkerer dobbelttrykk og åpner for nye kall når tittel eller bilder endres", async () => {
+    let resolveResult!: (value: unknown) => void;
+    const success = {
+      status: "pending",
+      categories: [{ category_id: "c1", parent_id: null, name_nb: "Stol", parent_name_nb: null }],
+      title: "Stol",
+    };
+    suggestListingFromPhotos
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveResult = resolve;
+          }),
+      )
+      .mockResolvedValue(success);
+    const secondImage = { ...image, id: "photo-2" };
+    const { result, rerender } = renderHook(
+      ({ images, title }) => usePhotoSuggestion({ images, title }),
+      { initialProps: { images: [image, secondImage], title: "" } },
+    );
+    result.current.turnstileRef.current = {
+      getResponsePromise: () => Promise.resolve("token"),
+      reset: vi.fn(),
+    } as unknown as NonNullable<typeof result.current.turnstileRef.current>;
+
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.analyzePhotos();
+      void result.current.analyzePhotos();
+    });
+    expect(result.current.analysisDisabled).toBe(true);
+    await waitFor(() => expect(suggestListingFromPhotos).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveResult(success);
+      await pending;
+    });
+    expect(result.current.analysisDisabled).toBe(true);
+    act(() => result.current.applyTitleSuggestion("Stol"));
+    rerender({ images: [image, secondImage], title: "Stol" });
+    expect(result.current.analysisDisabled).toBe(true);
+    rerender({ images: [image, secondImage], title: "Redigert stol" });
+    expect(result.current.analysisDisabled).toBe(false);
+    await act(async () => result.current.analyzePhotos());
+    expect(suggestListingFromPhotos).toHaveBeenCalledTimes(2);
+    expect(suggestListingFromPhotos).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({ title: "Redigert stol" }),
+    });
+    expect(result.current.analysisDisabled).toBe(true);
+
+    rerender({ images: [secondImage, image], title: "Redigert stol" });
+    expect(result.current.analysisDisabled).toBe(false);
+    expect(result.current.categorySuggestions).toEqual([]);
+    expect(result.current.canRequestAttributes).toBe(false);
+    await act(async () => result.current.analyzePhotos());
+    expect(suggestListingFromPhotos).toHaveBeenCalledTimes(3);
+    expect(result.current.analysisDisabled).toBe(true);
+    rerender({ images: [secondImage, image, { ...image, id: "photo-3" }], title: "Redigert stol" });
+    expect(result.current.analysisDisabled).toBe(false);
+  });
+
+  it("forkaster gamle bildesvar og slipper ikke gjennom parallelle kall ved bildebytte", async () => {
+    let resolveResult!: (value: unknown) => void;
+    suggestListingFromPhotos.mockReturnValue(
+      new Promise((resolve) => {
+        resolveResult = resolve;
+      }),
+    );
+    const { result, rerender } = renderHook(
+      ({ images }) => usePhotoSuggestion({ images, title: "" }),
+      { initialProps: { images: [image] } },
+    );
+    result.current.turnstileRef.current = {
+      getResponsePromise: () => Promise.resolve("token"),
+      reset: vi.fn(),
+    } as unknown as NonNullable<typeof result.current.turnstileRef.current>;
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.analyzePhotos();
+    });
+    await waitFor(() => expect(suggestListingFromPhotos).toHaveBeenCalledTimes(1));
+    rerender({ images: [{ ...image, id: "new-photo" }] });
+    expect(result.current.analysisDisabled).toBe(true);
+    await act(async () => result.current.analyzePhotos());
+    expect(suggestListingFromPhotos).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveResult({
+        status: "pending",
+        categories: [{ category_id: "c1" }],
+        title: "Gammel tittel",
+      });
+      await pending;
+    });
+    expect(result.current.titleSuggestion).toBeNull();
+    expect(result.current.categorySuggestions).toEqual([]);
+    expect(result.current.analysisDisabled).toBe(false);
+  });
+
+  it("åpner for nytt forsøk etter feil og blokkerer uten bilder", async () => {
+    const { result, rerender } = renderHook(
+      ({ images }) => usePhotoSuggestion({ images, title: "" }),
+      { initialProps: { images: [image] } },
+    );
+    result.current.turnstileRef.current = {
+      getResponsePromise: () => Promise.resolve("token"),
+      reset: vi.fn(),
+    } as unknown as NonNullable<typeof result.current.turnstileRef.current>;
+    suggestListingFromPhotos.mockRejectedValueOnce(new Error("Nettverksfeil"));
+    await act(async () => result.current.analyzePhotos());
+    expect(result.current.analysisDisabled).toBe(false);
+    await act(async () => result.current.analyzePhotos());
+    expect(suggestListingFromPhotos).toHaveBeenCalledTimes(2);
+    rerender({ images: [] });
+    expect(result.current.analysisDisabled).toBe(true);
+    await act(async () => result.current.analyzePhotos());
+    expect(suggestListingFromPhotos).toHaveBeenCalledTimes(2);
+  });
+
   it("venter på avkrysning før bildeforespørselen sendes", async () => {
     let resolveToken!: (token: string) => void;
     const token = new Promise<string>((resolve) => {
@@ -142,7 +259,7 @@ describe("usePhotoSuggestion", () => {
     expect(reset).not.toHaveBeenCalled();
   });
 
-  it("beholder kategoriforslaget når tittelforslaget fylles inn i feltet", async () => {
+  it("beholder kategori og detaljhjelp ved tittelredigering og åpner for ny analyse", async () => {
     suggestListingFromPhotos.mockResolvedValue({
       status: "pending",
       source: "photo-ai",
@@ -175,13 +292,25 @@ describe("usePhotoSuggestion", () => {
     expect(result.current.titleSuggestion).toBeNull();
     expect(result.current.status).toBe("ok");
     expect(result.current.canRequestAttributes).toBe(true);
+    expect(result.current.analysisDisabled).toBe(true);
 
-    // Brukerens egen tittelredigering er fortsatt ny input og nullstiller.
+    // Tilstandsovergang: manuell redigering beholder bildeforslagene.
     rerender({ title: "Toyota GT86 2016" });
-    expect(result.current.categorySuggestions).toHaveLength(0);
+    expect(result.current.categorySuggestions).toHaveLength(1);
     expect(result.current.titleSuggestion).toBeNull();
-    expect(result.current.status).toBe("idle");
-    expect(result.current.canRequestAttributes).toBe(false);
+    expect(result.current.status).toBe("ok");
+    expect(result.current.canRequestAttributes).toBe(true);
+    expect(result.current.analysisDisabled).toBe(false);
+
+    const attributes = [{ key: "color", value: "red" }];
+    suggestListingFromPhotos.mockResolvedValueOnce({ status: "pending", attributes });
+    await act(async () => {
+      expect(await result.current.requestAttributeSuggestions("biler")).toEqual(attributes);
+    });
+    rerender({ title: "Toyota GT86 2016 manuell" });
+    expect(result.current.categorySuggestions).toHaveLength(1);
+    expect(result.current.canRequestAttributes).toBe(true);
+    expect(result.current.analysisDisabled).toBe(false);
   });
 
   it("ignorerer et sent svar etter at tittelen er endret", async () => {
@@ -206,6 +335,9 @@ describe("usePhotoSuggestion", () => {
     });
     await waitFor(() => expect(suggestListingFromPhotos).toHaveBeenCalled());
     rerender({ title: "Sykkel" });
+    expect(result.current.analysisDisabled).toBe(true);
+    await act(async () => result.current.analyzePhotos());
+    expect(suggestListingFromPhotos).toHaveBeenCalledTimes(1);
     await act(async () => {
       resolveResult({
         status: "pending",
@@ -218,6 +350,7 @@ describe("usePhotoSuggestion", () => {
     expect(result.current.categorySuggestions).toHaveLength(0);
     expect(result.current.titleSuggestion).toBeNull();
     expect(result.current.status).toBe("idle");
+    expect(result.current.analysisDisabled).toBe(false);
   });
 
   it("returnerer ingen attributter fra et svar for gamle bilder", async () => {

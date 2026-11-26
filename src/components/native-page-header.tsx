@@ -19,6 +19,8 @@ interface NativePageHeaderProps {
   /** Erstatter tittelen med eget innhold (f.eks. fremdriftsviseren i
    * annonseflyten) over hele bredden mellom venstre kant og `right`. */
   center?: React.ReactNode;
+  /** h2 når headeren står i en sidekolonne og hovedinnholdet eier sidens h1. */
+  headingLevel?: "h1" | "h2";
 }
 
 export function NativePageHeader({
@@ -30,12 +32,13 @@ export function NativePageHeader({
   hideBack,
   titleFadesIn,
   center,
+  headingLevel = "h1",
 }: NativePageHeaderProps) {
   const native = useIsNative();
   const contentTitleOpacity = useScrollFadeOpacity();
   const router = useRouter();
   const navigate = useNavigate();
-  const Title = titleFadesIn ? "span" : "h1";
+  const Title = titleFadesIn ? "span" : headingLevel;
 
   if (!native) return null;
 

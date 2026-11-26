@@ -48,10 +48,14 @@ export function conditionLabelFor(categorySlug: string | null | undefined, value
   );
 }
 
-export const STATUS_LABEL: Record<"draft" | "active" | "sold" | "archived" | "expired", string> = {
+export const STATUS_LABEL: Record<
+  "draft" | "active" | "sold" | "archived" | "expired" | "disabled",
+  string
+> = {
   draft: "Utkast",
   active: "Aktiv",
   sold: "Solgt",
   archived: "Arkivert",
   expired: "Utløpt",
+  disabled: "Deaktivert av moderator",
 };

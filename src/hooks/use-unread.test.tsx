@@ -4,17 +4,23 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import { useUnreadConversationsCount, useUnreadSystemMessagesCount } from "./use-unread";
 
+const roleState = vi.hoisted(() => ({ staff: false }));
 const conversationsMock = vi.fn();
 const systemMessagesMock = vi.fn();
 
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { id: "user-1" } }) }));
 vi.mock("@/lib/native", () => ({ isNative: () => false }));
+vi.mock("@/hooks/use-user-roles", () => ({
+  useIsModerationStaff: () => ({ data: roleState.staff }),
+}));
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     channel: () => ({ on: () => ({ subscribe: () => ({}) }) }),
     removeChannel: vi.fn(),
     from: (table: string) => {
-      if (table === "conversations") {
+      if (table === "moderation_participants")
+        return { select: () => ({ eq: () => ({ is: async () => ({ data: [], error: null }) }) }) };
+      if (table === "conversations" || table === "conversation_inbox") {
         return {
           select: () => ({
             or: () =>
@@ -89,6 +95,24 @@ describe("useUnreadConversationsCount", () => {
     await waitFor(() => expect(result.current).toBe(0));
     // Systemmeldinger skal ikke engang bli spurt av denne hooken.
     expect(systemMessagesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("polling av uleste samtaler", () => {
+  it.each([
+    { staff: true, interval: 30_000 },
+    { staff: false, interval: false },
+  ])("poller bare for moderatorer, også uten tråder (%o)", async ({ staff, interval }) => {
+    roleState.staff = staff;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderHook(() => useUnreadConversationsCount(), {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    const query = client.getQueryCache().find({ queryKey: ["unread-conversations", "user-1"] });
+    expect(query?.observers[0]?.options.refetchInterval).toBe(interval);
+    roleState.staff = false;
   });
 });
 

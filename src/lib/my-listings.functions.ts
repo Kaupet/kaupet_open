@@ -61,7 +61,7 @@ export const getMyListingRows = createServerFn({ method: "GET" }).handler(
         id: l.id,
         kaupet_code: l.kaupet_code,
         title: l.title,
-        status: l.status as Row["status"],
+        status: l.status,
         price_nok: l.price_nok,
         is_free: l.is_free,
         city: l.city,

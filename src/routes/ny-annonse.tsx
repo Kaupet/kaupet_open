@@ -1,7 +1,7 @@
 import { BusinessApprovalNotice } from "@/features/business-account/business-approval-notice";
 import { useBusinessMembership } from "@/features/business-account/use-business-membership";
 import { DRAFT_ACTOR_CHANGED_MESSAGE } from "@/features/listing-creation/use-draft-actor";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { ClientOnly, createFileRoute, Link, useNavigate, useBlocker } from "@tanstack/react-router";
 import { useForm, useWatch, type FieldErrors } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -97,7 +97,10 @@ import {
   EditableListingReview,
   PhoneListingPreview,
 } from "@/features/listing-creation/preview-draft-view";
-import type { ListingEditContextValue } from "@/features/listing-edit/edit-mode-context";
+import {
+  DRAFT_LISTING_ID,
+  type ListingEditContextValue,
+} from "@/features/listing-edit/edit-mode-context";
 import { authResumeReturnTo, currentReturnTo } from "@/lib/auth-return";
 import { blockImplicitSubmit, publishGate } from "@/features/listing-creation/publish-gate";
 import { NewListingError } from "@/features/listing-creation/new-listing-error";
@@ -611,7 +614,25 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
   // `pages`/`goNext`, must see the latest function the moment it's called,
   // not one render behind.
   // eslint-disable-next-line react-hooks/refs
-  goNextRef.current = goNext;
+  goNextRef.current = advanceOrReturnToReview;
+
+  // Vertikalen får vite når en side forlates, uansett retning (Neste,
+  // Tilbake, stegraden, nettleserens tilbake) — kjøretøy: et ubekreftet nytt
+  // skilt forkastes. Kun på stegbytte; `currentPage` endres også ved
+  // attributtendringer på samme side.
+  // Nøklene til siden slik den sist ble vist. Oppdateres etter hver render, så
+  // de stemmer også når sidene bygges om uten stegbytte (f.eks. ny kategori).
+  const shownPageKeysRef = useRef<string[] | null>(null);
+  const notifyPageLeft = useEffectEvent(() => {
+    if (shownPageKeysRef.current) wizardVertical.onPageLeft(shownPageKeysRef.current);
+  });
+  useEffect(() => {
+    notifyPageLeft();
+  }, [step]);
+  // Må stå etter effekten over: den leser forrige sides nøkler før de byttes.
+  useEffect(() => {
+    shownPageKeysRef.current = currentPage?.groups.map((group) => group.key) ?? [];
+  });
 
   // Underkategorien er valgfri å endre uten varsel helt til brukeren
   // forlater vertikalens underkategoriside (eiergruppen i VerticalFlow, se
@@ -1080,6 +1101,14 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     }
     // Vertikalen kan gå videre selv (kjøretøy: skriver oppslaget inn i attributes).
     if (wizardVertical.afterValidate(groupKeys)) return "advanced";
+    advanceOrReturnToReview();
+    window.scrollTo({ top: 0 });
+    return "advanced";
+  }
+
+  /** Neste side, eller tilbake til Se over når redigeringen startet derfra.
+   * Også vertikalens goNext (kjøretøy: etter bekreftet nytt skilt). */
+  function advanceOrReturnToReview() {
     if (isReviewEditFinished(returnToReviewRef.current, step, reviewSectionLastStepRef.current)) {
       setReviewJumpRequested(true);
       returnToReviewRef.current = false;
@@ -1087,8 +1116,6 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     } else {
       goNext();
     }
-    window.scrollTo({ top: 0 });
-    return "advanced";
   }
 
   async function attemptNextPage(): Promise<ComposerNavigationResult> {
@@ -1196,7 +1223,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
    * til sine steg: utkastets bilder er lokale, og de andre har egne flyter. */
   const draftEditContext: ListingEditContextValue = {
     editMode: true,
-    listingId: "draft",
+    listingId: DRAFT_LISTING_ID,
     behavior,
     fieldStatus: {},
     saveField: async (patch) => {
@@ -1383,6 +1410,7 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
     ensureDraftId,
 
     photoSuggestionEnabled: photoSuggestion.enabled,
+    photoSuggestionDisabled: photoSuggestion.analysisDisabled,
     photoSuggestionStatus: photoSuggestion.status,
     analyzePhotos: photoSuggestion.analyzePhotos,
     photoCategorySuggestions: photoSuggestion.categorySuggestions,
@@ -1590,7 +1618,9 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
 
   return (
     <>
-      <div className="mx-auto max-w-3xl px-4 pt-4">
+      {/* Tom uten varsel: på native ville padding-en ellers skjøvet skjemaet,
+          som har skjermens høyde, 16 px under bunnen. */}
+      <div className="mx-auto max-w-3xl px-4 pt-4 native:empty:hidden">
         <BusinessApprovalNotice status={business?.organization.verification_status} />
       </div>
       <form onSubmit={submitComposer} onKeyDown={blockImplicitSubmit}>
@@ -1779,15 +1809,15 @@ function NewListingPage({ organizationId }: { organizationId: string | null }) {
             <NativeComposerDeck
               onBack={isFirst || isCategoryConfirmPage ? undefined : goBack}
               onForward={attemptNextPage}
+              // Beskrivelsessiden fyller kortet i stedet for en fast høyde:
+              // med fast høyde ble alt under en utvidet «Tekniske detaljer»
+              // klippet bort, og med tastaturet åpent sto det tom plass under
+              // feltet der header og bunnlinje var trukket fra.
+              fill={isNativeDescriptionSoloPage}
             >
               <div
                 data-testid={groups[0] ? `wizard-step-${groups[0].key}` : undefined}
-                className={isNativeDescriptionSoloPage ? "flex flex-col" : "space-y-6"}
-                style={
-                  isNativeDescriptionSoloPage
-                    ? { height: "calc(var(--vvh, 100dvh) - var(--app-bottom-nav-h) - 13.75rem)" }
-                    : undefined
-                }
+                className={isNativeDescriptionSoloPage ? "flex flex-1 flex-col" : "space-y-6"}
               >
                 {groups.map((g) => (
                   <Suspense key={g.key} fallback={null}>

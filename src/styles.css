@@ -253,7 +253,7 @@ html.native body::before {
 /* Height reserved for the fixed bottom nav in native apps (AppBottomNav),
    plus a margin so scrolled content/floating buttons never sit under it. */
 :root {
-  --app-bottom-nav-h: calc(6rem + var(--safe-bottom));
+  --app-bottom-nav-h: calc(3.75rem + var(--safe-bottom));
 }
 
 /* Høyden på det klistrede sidehodet (SiteHeader, `sticky top-0 z-40`).
@@ -293,6 +293,193 @@ html.native body::before {
   height: var(--vvh, 100dvh);
   max-height: var(--vvh, 100dvh);
   overflow: hidden;
+  /* Headeren står øverst med egen pt-safe; skallets pt-6 ga bare tom luft
+     over stegviseren. Landskap og åpent tastatur setter egen padding. */
+  padding-top: 0;
+}
+
+/* Tastaturet åpent: bare kortet og feilsammendraget står igjen, så feltet
+   brukeren skriver i får hele høyden over tastaturet (se ListingComposerShell). */
+.native .native-composer-shell[data-keyboard-open] {
+  padding-top: max(0.5rem, var(--safe-top));
+  padding-bottom: 0.5rem;
+}
+.native
+  .native-composer-shell[data-keyboard-open]
+  :is([data-composer-chrome], [data-composer-footer]) {
+  display: none;
+}
+.native .native-composer-shell[data-keyboard-open] .native-composer-card {
+  margin-top: 0;
+  scroll-padding-block: 1rem 2rem;
+}
+.native
+  .native-composer-shell[data-keyboard-open]
+  .native-composer-card
+  :is(input, textarea, select) {
+  scroll-margin-block: 1rem 2rem;
+}
+
+/* Beskrivelsen fyller kortet over tastaturet mens den har fokus, også når
+   innholdet over (f.eks. «Tekniske detaljer») er høyt. Kortet blir en
+   size-container kun med tastaturet åpent, der høyden alltid kommer fra
+   skallets flex-kolonne. 100cqh følger WebView-resize i samme layout-pass,
+   og skallet scroller seksjonen (data-scroll-anchor) til toppen etterpå.
+   Fratrekket dekker scroll-padding over seksjonen, etikettraden og litt luft
+   under feltet. iOS 15 mangler cq-enheter og beholder flex-1-høyden. */
+.native .native-composer-shell[data-keyboard-open] .native-composer-card {
+  container-type: size;
+}
+.native
+  .native-composer-shell[data-keyboard-open]
+  .native-composer-card
+  textarea[data-fill-on-focus]:focus {
+  min-height: max(6rem, calc(100cqh - 1.5rem));
+}
+
+/* Telefon i landskap: høyden er for knapp til header over og bunnlinje under
+   kortet. Headeren (fremdrift, stegliste, X) og Forrige/Fortsett flyttes til
+   en kolonne til høyre, og kortet får hele høyden. Kolonnen viser alle stegene
+   (StepList i step-indicator.tsx, ellers skjult) i stedet for telleren, så
+   plassen mellom fremdriften og knappene brukes til oversikt og vei tilbake.
+   Gjelder ikke med tastaturet åpent, der reglene over skjuler alt rundt
+   kortet. */
+@media (max-height: 30rem) {
+  .native .native-composer-shell:not([data-keyboard-open]) {
+    --composer-rail-footer-h: calc(5rem + var(--safe-bottom));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 13rem;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    column-gap: 1rem;
+    padding-top: max(0.75rem, var(--safe-top));
+    padding-bottom: 0;
+    /* Notchen ligger på siden i landskap — kortet skal ikke under den. */
+    padding-left: max(1rem, var(--safe-left));
+    padding-right: max(1rem, var(--safe-right));
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) > * {
+    grid-column: 1;
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) .native-composer-card {
+    grid-row: 3;
+    margin-top: 0;
+    margin-bottom: max(0.75rem, var(--safe-bottom));
+  }
+  /* Header og bunnlinje deler høyre kolonne over hele høyden. Headeren
+     slutter over bunnlinjen og ruller selv hvis steglisten er for lang. */
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-chrome] > header,
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-footer] {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    padding-inline: 0;
+    border: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-chrome] > header {
+    position: relative;
+    align-self: stretch;
+    align-items: flex-start;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-block: 0;
+    /* Margin, ikke padding: headeren skal ikke dekke (og ta trykk fra)
+       bunnlinjen den deler rutenettcelle med. */
+    margin-bottom: var(--composer-rail-footer-h);
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-chrome] > header > * {
+    padding-inline: 0;
+    min-width: 0;
+  }
+  /* X øverst til høyre over fremdriftslinjen, så steglisten får hele bredden. */
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-chrome]
+    > header
+    > :last-child {
+    position: absolute;
+    top: 0;
+    right: 0;
+    min-width: 0;
+  }
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-chrome]
+    nav
+    > [role="progressbar"] {
+    width: calc(100% - 3.5rem);
+    margin-top: 1rem;
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) [data-step-counter] {
+    display: none;
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) [data-step-list] {
+    display: grid;
+    gap: 0.125rem;
+    margin-top: 0.75rem;
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-footer] {
+    align-self: end;
+    padding-top: 0.75rem;
+  }
+  /* Forrige som ikonknapp til venstre for Fortsett. */
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-footer] > div {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-footer]
+    > div
+    > :first-child {
+    width: 3rem;
+    justify-content: center;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 9999px;
+  }
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-footer]
+    > div
+    > :first-child[aria-hidden="true"] {
+    display: none;
+  }
+  .native .native-composer-shell:not([data-keyboard-open]) [data-composer-back-label] {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-footer]
+    > div
+    > :last-child {
+    grid-column: -2;
+    justify-self: stretch;
+  }
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-footer]
+    > div
+    > [aria-hidden="true"]
+    + :last-child {
+    grid-column: 1 / -1;
+  }
+  .native
+    .native-composer-shell:not([data-keyboard-open])
+    [data-composer-footer]
+    > div
+    > :last-child
+    button {
+    width: 100%;
+    white-space: normal;
+    line-height: 1.2;
+  }
 }
 
 .native .native-composer-motion {
@@ -311,8 +498,16 @@ html.native body::before {
 
 .native .native-composer-card :is(input:not([type="checkbox"]):not([type="radio"]), select) {
   min-height: 3.5rem;
-  padding-inline: 1rem;
+  padding-inline-start: 1rem;
   border-radius: var(--radius);
+}
+
+/* Felt med enhet til høyre (km, kr) beholder høyre padding fra sin egen
+   klasse, som holder plass til enheten. Ellers ligger verdien oppå den. */
+.native
+  .native-composer-card
+  :is(input:not([type="checkbox"]):not([type="radio"]):not([data-unit-suffix]), select) {
+  padding-inline-end: 1rem;
 }
 
 .native .native-composer-card textarea {
@@ -359,6 +554,9 @@ html.native body::before {
    bunnpillens plass, se NativeContactBar i listing-detail-view.tsx.
    --app-bottom-nav-h beholdes — baren er like høy, så pb-bottom-nav og
    toast-offset stemmer fortsatt. Sideskinnen på nettbrett røres ikke. */
+.listing-contact-bar:not(.nav-rail) {
+  --app-bottom-nav-h: calc(6rem + var(--safe-bottom));
+}
 .listing-contact-bar:not(.nav-rail) .app-bottom-nav {
   display: none;
 }

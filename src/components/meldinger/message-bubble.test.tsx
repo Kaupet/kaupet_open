@@ -31,6 +31,26 @@ function setup(messages: Message[], over: Partial<MessageInteraction> = {}) {
 afterEach(cleanup);
 
 describe("meldingsboble", () => {
+  it("viser avsendernavn øverst i gruppen, men aldri på egne meldinger", () => {
+    render(
+      <div>
+        {renderWithDayDividers(
+          [
+            msg({ id: "1", sender_id: "forrige", body: "Første" }),
+            msg({ id: "2", sender_id: "forrige", body: "Andre" }),
+            msg({ id: "3", sender_id: "me", body: "Mitt svar" }),
+          ],
+          "me",
+          null,
+          {},
+          undefined,
+          () => "Anne fra Butikken (moderator)",
+        )}
+      </div>,
+    );
+    expect(screen.getAllByText("Anne fra Butikken (moderator)")).toHaveLength(1);
+  });
+
   it("åpner menyen med trykk, skjermleseraktivering og mellomrom", async () => {
     const user = userEvent.setup();
     const { onOpenActions } = setup([msg({})]);

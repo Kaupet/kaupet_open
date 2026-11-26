@@ -26,6 +26,29 @@ describe("NativeComposerDeck", () => {
     expect(screen.queryByTestId("native-composer-deck")).toBeNull();
   });
 
+  it("fyller kortet som flex-kolonne med fill, uten fast høyde", () => {
+    render(
+      <NativeComposerDeck onForward={vi.fn()} fill>
+        <p>Beskrivelse</p>
+      </NativeComposerDeck>,
+    );
+    const deck = screen.getByTestId("native-composer-deck");
+    const card = screen.getByTestId("native-composer-card");
+    expect(deck.className).toContain("min-h-full");
+    expect(deck.className).toContain("flex-col");
+    expect(card.className).toContain("flex-1");
+    expect(deck.style.height).toBe("");
+  });
+
+  it("legger ikke på fyll-layout uten fill", () => {
+    render(
+      <NativeComposerDeck onForward={vi.fn()}>
+        <p>Vanlig steg</p>
+      </NativeComposerDeck>,
+    );
+    expect(screen.getByTestId("native-composer-deck").className).not.toContain("min-h-full");
+  });
+
   it("bruker samme fremoverhandling for swipe og lar bakoverswipe gå tilbake", async () => {
     const onForward = vi.fn().mockResolvedValue("advanced");
     const onBack = vi.fn();

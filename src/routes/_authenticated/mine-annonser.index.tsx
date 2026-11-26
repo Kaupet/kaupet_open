@@ -69,7 +69,7 @@ function MyListingsPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [tab, setTab] = useState<"all" | "active" | "sold" | "draft" | "wtb">("all");
+  const [tab, setTab] = useState<"all" | "active" | "sold" | "draft" | "disabled" | "wtb">("all");
   const [publishWarning, setPublishWarning] = useState<{
     id: string;
     kaupetCode: string;
@@ -198,14 +198,19 @@ function MyListingsPage() {
       rows?.filter((r) => r.status === "sold" || r.status === "archived" || r.status === "expired")
         .length ?? 0,
     draft: rows?.filter((r) => r.status === "draft").length ?? 0,
+    disabled: rows?.filter((r) => r.status === "disabled").length ?? 0,
   };
 
+  // Fanen forsvinner når siste blokkering oppheves; da skal ikke listen stå tom.
+  const activeTab = tab === "disabled" && statusCounts.disabled === 0 ? "all" : tab;
+
   const filtered = (rows ?? []).filter((r) => {
-    if (tab === "all") return true;
-    if (tab === "active") return r.status === "active";
-    if (tab === "sold")
+    if (activeTab === "all") return true;
+    if (activeTab === "active") return r.status === "active";
+    if (activeTab === "sold")
       return r.status === "sold" || r.status === "archived" || r.status === "expired";
-    if (tab === "draft") return r.status === "draft";
+    if (activeTab === "draft") return r.status === "draft";
+    if (activeTab === "disabled") return r.status === "disabled";
     return true;
   });
 
@@ -230,7 +235,7 @@ function MyListingsPage() {
           )}
         </div>
 
-        <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="mt-6">
+        <Tabs value={activeTab} onValueChange={(v) => setTab(v as typeof tab)} className="mt-6">
           {native ? (
             <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 scrollbar-none">
               {(
@@ -249,12 +254,20 @@ function MyListingsPage() {
                     label: `Utkast (${statusCounts.draft})`,
                   },
                   {
+                    value: "disabled",
+                    label: `Deaktivert (${statusCounts.disabled})`,
+                  },
+                  {
                     value: "wtb",
                     label: `Ønskes kjøpt${wtbRows.length > 0 ? ` (${wtbRows.length})` : ""}`,
                   },
                 ] as const
               )
-                .filter(({ value }) => WTB_AVAILABLE || value !== "wtb")
+                .filter(
+                  ({ value }) =>
+                    (WTB_AVAILABLE || value !== "wtb") &&
+                    (value !== "disabled" || statusCounts.disabled > 0),
+                )
                 .map(({ value, label }) => (
                   <button
                     key={value}
@@ -263,7 +276,7 @@ function MyListingsPage() {
                       setTab(value);
                     }}
                     className={`shrink-0 rounded-full border px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors ${
-                      tab === value
+                      activeTab === value
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-border bg-card text-foreground"
                     }`}
@@ -281,6 +294,9 @@ function MyListingsPage() {
               <TabsTrigger value="active">Aktive ({statusCounts.active})</TabsTrigger>
               <TabsTrigger value="sold">Solgt / utløpt ({statusCounts.sold})</TabsTrigger>
               <TabsTrigger value="draft">Utkast ({statusCounts.draft})</TabsTrigger>
+              {statusCounts.disabled > 0 && (
+                <TabsTrigger value="disabled">Deaktivert ({statusCounts.disabled})</TabsTrigger>
+              )}
               {WTB_AVAILABLE && (
                 <TabsTrigger value="wtb">
                   Ønskes kjøpt{wtbRows.length > 0 ? ` (${wtbRows.length})` : ""}
@@ -289,7 +305,7 @@ function MyListingsPage() {
             </TabsList>
           )}
           {tab !== "wtb" && (
-            <TabsContent value={tab} className="mt-6">
+            <TabsContent value={activeTab} className="mt-6">
               {filtered.length === 0 ? (
                 <EmptyState
                   title={

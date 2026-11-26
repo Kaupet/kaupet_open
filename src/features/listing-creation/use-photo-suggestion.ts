@@ -30,9 +30,9 @@ type PhotoSuggestionStatus =
  *
  * "inputRevision" (brief § 2/§ 5) is images + title only, not category: the
  * category is exactly what `identify` is still figuring out when consent is
- * asked, so it can't be part of the consent snapshot. Once the user accepts
- * or picks a category, the consent from the same images+title still covers
- * the follow-up "Foreslå detaljer" call.
+ * asked, so it can't be part of the consent snapshot. Title edits preserve
+ * the photo consent for the follow-up "Foreslå detaljer" call, which sends
+ * images and category only.
  */
 export function usePhotoSuggestion(params: { images: PendingImage[]; title: string }) {
   const { images, title } = params;
@@ -59,33 +59,40 @@ export function usePhotoSuggestion(params: { images: PendingImage[]; title: stri
   const [titleSuggestion, setTitleSuggestion] = useState<string | null>(null);
   const [attributeSuggestionLoading, setAttributeSuggestionLoading] = useState(false);
   const [verificationNeeded, setVerificationNeeded] = useState(false);
+  const [completedImagesKey, setCompletedImagesKey] = useState<string | null>(null);
+  const [seenImagesKey, setSeenImagesKey] = useState(imagesKey);
+  const imagesChanged = seenImagesKey !== imagesKey;
+  if (imagesChanged) {
+    setSeenImagesKey(imagesKey);
+    setCompletedImagesKey(null);
+  }
+  const [identifyPending, setIdentifyPending] = useState(false);
+  const identifyInFlight = useRef(false);
+  const analysisDisabled =
+    !enabled || images.length === 0 || identifyPending || completedImagesKey === imagesKey;
 
-  // Derived-state-on-prop-change (React's own pattern — state, not a ref, so
-  // it's safe to read/write during render): reset everything tied to the
-  // previous inputRevision the moment images or title change, per brief § 5
-  // ("avviste forslag vises ikke igjen før inputRevision endres" applies
-  // symmetrically to accepted ones — a stale suggestion for a different
-  // photo set/title must never linger).
+  // Bildebytte forkaster forslagene. Tittelredigering beholder dem og
+  // samtykket, men åpner for en ny eksplisitt analyse.
   const [seenRevision, setSeenRevision] = useState(revision);
   // Revisjonen som tittelforslaget selv sist skrev inn i feltet (via
   // applyTitleSuggestion): den påfølgende tittelendringen er systemets egen
   // utfylling, ikke ny brukerinput, og skal ikke nullstille forslagene.
   const [selfAppliedRevision, setSelfAppliedRevision] = useState<string | null>(null);
   if (seenRevision !== revision) {
-    if (selfAppliedRevision === revision) {
-      // Tittelforslaget ble skrevet inn i feltet: behold kategoriforslaget,
-      // og la samtykket følge med over på den nye tittelen (den er generert
-      // av samme bilder som samtykket gjaldt).
-      setSeenRevision(revision);
-      setSelfAppliedRevision(null);
-      setConsentedRevision((current) => (current === seenRevision ? revision : current));
-    } else {
-      setSeenRevision(revision);
+    setSeenRevision(revision);
+    setSelfAppliedRevision(null);
+    if (imagesChanged) {
       setConsentedRevision(null);
       setStatus("idle");
       setCategorySuggestions([]);
       setTitleSuggestion(null);
-      setSelfAppliedRevision(null);
+    } else {
+      setConsentedRevision((current) => (current === seenRevision ? revision : current));
+      if (selfAppliedRevision !== revision) {
+        setCompletedImagesKey(null);
+        setTitleSuggestion(null);
+        setStatus(categorySuggestions.length > 0 ? "ok" : "idle");
+      }
     }
   }
 
@@ -144,6 +151,9 @@ export function usePhotoSuggestion(params: { images: PendingImage[]; title: stri
   // Trykket på knappen er samtykket: hjelpeteksten under den forklarer KI-
   // bruken og lenker til personvernerklæringen.
   async function analyzePhotos() {
+    if (identifyInFlight.current || analysisDisabled) return;
+    identifyInFlight.current = true;
+    setIdentifyPending(true);
     const generation = ++identifyGeneration.current;
     const startRevision = revision;
     const stale = () =>
@@ -181,6 +191,7 @@ export function usePhotoSuggestion(params: { images: PendingImage[]; title: stri
         "categories" in result &&
         result.categories.length > 0
       ) {
+        setCompletedImagesKey(imagesKey);
         setCategorySuggestions(result.categories);
         setTitleSuggestion(result.title ?? null);
         setStatus("ok");
@@ -189,6 +200,9 @@ export function usePhotoSuggestion(params: { images: PendingImage[]; title: stri
       }
     } catch {
       if (!stale()) setStatus("unavailable");
+    } finally {
+      identifyInFlight.current = false;
+      setIdentifyPending(false);
     }
   }
 
@@ -254,6 +268,7 @@ export function usePhotoSuggestion(params: { images: PendingImage[]; title: stri
     },
     status,
     analyzePhotos,
+    analysisDisabled,
     categorySuggestions,
     titleSuggestion,
     applyTitleSuggestion,

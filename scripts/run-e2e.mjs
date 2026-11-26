@@ -8,6 +8,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { APP_PORT, INSPECTOR_PORT, SUPABASE_PORTS, startOnFreePorts } from "./e2e-ports.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const databaseOnly = process.argv.includes("--database-only");
@@ -76,23 +77,22 @@ cpSync(path.join(root, "supabase"), e2eSupabaseDir, {
   filter: (source) => ![".temp", ".branches"].includes(path.basename(source)),
 });
 const configPath = path.join(e2eSupabaseDir, "config.toml");
-const portOffset = 1000 + Math.floor(Math.random() * 7000);
-const port = (original) => String(original + portOffset);
 const projectId = `kaupet-e2e-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-const isolatedConfig = readFileSync(configPath, "utf8")
+const baseConfig = readFileSync(configPath, "utf8")
   .replace(/^project_id\s*=\s*"[^"]+"/m, `project_id = "${projectId}"`)
-  .replaceAll("54320", port(54320))
-  .replaceAll("54321", port(54321))
-  .replaceAll("54322", port(54322))
-  .replaceAll("54323", port(54323))
-  .replaceAll("54324", port(54324))
-  .replaceAll("54325", port(54325))
-  .replaceAll("54326", port(54326))
-  .replaceAll("54327", port(54327))
-  .replaceAll("54329", port(54329))
-  .replace("inspector_port = 8083", `inspector_port = ${port(8083)}`)
   .replace("[auth.email.smtp]\nenabled = true", "[auth.email.smtp]\nenabled = false");
-writeFileSync(configPath, isolatedConfig);
+
+function writeIsolatedConfig(offset) {
+  let config = baseConfig.replace(
+    `inspector_port = ${INSPECTOR_PORT}`,
+    `inspector_port = ${INSPECTOR_PORT + offset}`,
+  );
+  for (const original of SUPABASE_PORTS) {
+    config = config.replaceAll(String(original), String(original + offset));
+  }
+  writeFileSync(configPath, config);
+}
+
 // Lokal S3-protokollfixture. Autorisasjon og kvoter testes i appen/RLS;
 // den faktiske lagringsleverandørens IAM/CORS må også prøves før utrulling.
 const objects = new Map();
@@ -143,31 +143,52 @@ try {
   // supabase start har en kjent race mot Docker (og kan rammes av Docker
   // Hub sin rate-limiting på anonyme pulls) — retry med opprydding mellom
   // forsøk, samme mønster som rls-jobben i .github/workflows/ci.yml.
-  let started = false;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    // E2E_SUPABASE_EXCLUDE=edge-runtime hopper over tjenester som ikke starter
-    // lokalt (f.eks. edge runtime bak en TLS-inspiserende proxy).
-    const exclude = process.env.E2E_SUPABASE_EXCLUDE;
-    const start = run("bunx", [
-      "supabase",
-      "--workdir",
-      e2eRoot,
-      "start",
-      ...(exclude ? ["-x", exclude] : []),
-    ]);
-    if (start.status === 0) {
-      started = true;
-      break;
-    }
-    console.error(`supabase start feilet (forsøk ${attempt}/3), rydder opp og prøver igjen …`);
-    run("bunx", ["supabase", "--workdir", e2eRoot, "stop", "--no-backup"]);
-  }
-  if (!started) {
+  // Nye porter for hvert forsøk, siden en annen lokal stack kan ha tatt dem.
+  const portOffset = await startOnFreePorts({
+    start: (offset) => {
+      writeIsolatedConfig(offset);
+      // E2E_SUPABASE_EXCLUDE=edge-runtime hopper over tjenester som ikke starter
+      // lokalt (f.eks. edge runtime bak en TLS-inspiserende proxy).
+      const exclude = process.env.E2E_SUPABASE_EXCLUDE;
+      const start = run("bunx", [
+        "supabase",
+        "--workdir",
+        e2eRoot,
+        "start",
+        ...(exclude ? ["-x", exclude] : []),
+      ]);
+      return start.status === 0;
+    },
+    cleanup: (attempt, attempts) => {
+      console.error(
+        `supabase start feilet (forsøk ${attempt}/${attempts}), rydder opp og prøver igjen …`,
+      );
+      run("bunx", ["supabase", "--workdir", e2eRoot, "stop", "--no-backup"]);
+    },
+  });
+  if (portOffset === null) {
     throw new Error(
       "Kunne ikke starte isolert lokal Supabase. Kontroller at Docker kjører, og prøv igjen.",
     );
   }
   supabaseStarted = true;
+
+  // PostgREST svarer på HEAD uten Content-Length og lukker derfor tilkoblingen
+  // rett etterpå. Kong kan rekke å gjenbruke den fra poolen i mellomtiden, og
+  // da får en POST 502 (GET prøves på nytt av nginx). Uten pool ingen race.
+  const kongReload = run("docker", [
+    "exec",
+    "-e",
+    "KONG_UPSTREAM_KEEPALIVE_POOL_SIZE=0",
+    `supabase_kong_${projectId}`,
+    "kong",
+    "reload",
+    "--nginx-conf",
+    "/home/kong/custom_nginx.template",
+  ]);
+  if (kongReload.status !== 0) {
+    throw new Error("Kunne ikke slå av upstream-keepalive i Kong.");
+  }
 
   const local = localSupabaseStatus(e2eRoot);
   if (!local) throw new Error("Lokal Supabase startet, men status kunne ikke leses.");
@@ -203,7 +224,7 @@ try {
     VITE_OPEN_EMAIL: "false",
     VITE_OPEN_LEGAL_PAGES: "false",
     VITE_OPEN_LAYOUT: "hvit",
-    VITE_SITE_URL: `http://localhost:${port(18080)}`,
+    VITE_SITE_URL: `http://localhost:${APP_PORT + portOffset}`,
     PLAYWRIGHT_BASE_URL: "",
 
     LOCAL_SUPABASE_URL: apiUrl,
@@ -217,8 +238,8 @@ try {
     VITE_SUPABASE_URL: apiUrl,
     VITE_SUPABASE_PUBLISHABLE_KEY: publishableKey,
     VITE_ENVIRONMENT: "development",
-    PLAYWRIGHT_PORT: port(18080),
-    PUBLIC_SITE_URL: `http://localhost:${port(18080)}`,
+    PLAYWRIGHT_PORT: String(APP_PORT + portOffset),
+    PUBLIC_SITE_URL: `http://localhost:${APP_PORT + portOffset}`,
   };
 
   for (const [command, args] of [

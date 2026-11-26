@@ -7,11 +7,13 @@ import { useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 
 import { IntentOptions } from "@/components/intent-title-landing";
+import { SiteFooter } from "@/components/site-footer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useLandingCategories } from "@/features/landing/use-landing-categories";
 import { interpretedSearchState, submitSearch } from "@/features/listing-search/submit-search";
 import { categoriesQueryOptions } from "@/hooks/use-categories";
+import { useIsNative } from "@/hooks/use-is-native";
 import { defaultAdvancedSearchValue } from "@/lib/advanced-search-value";
 import { CategoryIcon } from "@/lib/category-icons";
 
@@ -35,6 +37,7 @@ export const Route = createFileRoute("/")({
 });
 
 function LandingPage() {
+  const native = useIsNative();
   const navigate = useNavigate();
   const { opprett } = Route.useSearch();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -63,7 +66,7 @@ function LandingPage() {
   };
 
   return (
-    <main className="mx-auto w-full max-w-3xl space-y-6 px-4 py-8">
+    <section className="px-safe mx-auto w-full max-w-3xl space-y-6 py-8 native:pt-[calc(2rem+var(--safe-top))]">
       <form onSubmit={onSubmit} className="flex gap-2">
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -71,11 +74,11 @@ function LandingPage() {
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="h-11 pl-9"
+            className="native-touch-target h-11 pl-9"
             aria-label="Søk i annonser"
           />
         </div>
-        <Button type="submit" size="lg">
+        <Button type="submit" size="lg" className="native-touch-target">
           Søk
         </Button>
       </form>
@@ -83,6 +86,7 @@ function LandingPage() {
       <div className="space-y-3">
         <Button
           variant="outline"
+          className="native-touch-target native:w-full"
           aria-expanded={pickerOpen}
           onClick={() => setPickerOpen((o) => !o)}
         >
@@ -98,7 +102,7 @@ function LandingPage() {
               <Link
                 to="/$kaupetCode"
                 params={{ kaupetCode: cat.slug }}
-                className="flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
+                className="native-touch-target flex min-h-11 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm hover:bg-muted"
               >
                 <CategoryIcon iconName={cat.icon} className="size-4 shrink-0" />
                 {cat.name_nb}
@@ -107,6 +111,7 @@ function LandingPage() {
           ))}
         </ul>
       </nav>
-    </main>
+      {native && <SiteFooter />}
+    </section>
   );
 }

@@ -6,11 +6,11 @@ tilleggsvilkåret etter AGPL-3.0 § 7(e) i [NOTICE](NOTICE).
 
 ## Hva som er beskyttet
 
-Happy Pixel AS gir ingen rett etter varemerkeretten til å bruke
+[Happy Pixel AS](https://happypixel.no) gir ingen rett etter varemerkeretten til å bruke
 
 - ordet «kaupet», uansett skrivemåte og alene eller som del av et annet navn,
   domene, brukernavn eller produktnavn,
-- logoer, ikoner og annen grafisk profil Happy Pixel AS bruker for sine
+- logoer, ikoner og annen grafisk profil [Happy Pixel AS](https://happypixel.no) bruker for sine
   tjenester, og
 - navn eller kjennetegn som kan forveksles med disse.
 
@@ -24,7 +24,7 @@ koden, for eksempel:
   kildekode og pakkebeskrivelser, og
 - lenker til prosjektadressen <https://github.com/Kaupet/kaupet_open>.
 
-Omtalen skal være saklig og ikke gi inntrykk av at Happy Pixel AS står bak,
+Omtalen skal være saklig og ikke gi inntrykk av at [Happy Pixel AS](https://happypixel.no) står bak,
 godkjenner eller samarbeider med tjenesten din.
 
 ## Navnet på din egen tjeneste er ikke lov

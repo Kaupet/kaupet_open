@@ -132,6 +132,8 @@ export function useDraftAutosave(fields: DraftFields) {
   const DRAFT_ID_KEY = draftStorageKey("sell", ownerId, "_id", ownerOrganizationId) + storageScope;
   const DRAFT_UPDATED_AT_KEY =
     draftStorageKey("sell", ownerId, "_updated_at", ownerOrganizationId) + storageScope;
+  const DRAFT_NEW_ID_KEY =
+    draftStorageKey("sell", ownerId, "_new_id", ownerOrganizationId) + storageScope;
   const [draftSaveMessage, setDraftSaveMessage] = useState<string | null>(null);
   const draftSaveMessageRef = useRef<string | null>(null);
   const guestTransfer = useRef<string | null>(null);
@@ -162,6 +164,10 @@ export function useDraftAutosave(fields: DraftFields) {
   const draftSavingStopped = useRef(false);
   const draftSaveInProgress = useRef<Promise<string | null> | null>(null);
   const saveGeneration = useRef(0);
+  // Revisjonen av skjemaet da siste serverlagring feilet. Autolagringen
+  // prøver ikke igjen før brukeren har endret noe; publisering og «Lagre
+  // utkast» prøver alltid.
+  const failedRevision = useRef<number | null>(null);
   const imageStoreReady = useRef(false);
   const imageLoadPromise = useRef<Promise<PendingImage[]> | null>(null);
   const loadImagesRef = useRef<() => Promise<PendingImage[]>>(() => loadDraftImages(DRAFT_KEY));
@@ -211,7 +217,7 @@ export function useDraftAutosave(fields: DraftFields) {
         (data.draft_kind !== undefined && data.draft_kind !== "sell") ||
         (typeof data.draft_version === "number" && data.draft_version > 1)
       ) {
-        removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY);
+        removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY, DRAFT_NEW_ID_KEY);
         draftIdRef.current = null;
         setDraftId(null);
         return;
@@ -220,7 +226,7 @@ export function useDraftAutosave(fields: DraftFields) {
       if (isDraftFresh(savedAt)) {
         if (data.title || data.description || Number(data.image_count) > 0) setHasDraftData(data);
       } else {
-        removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY);
+        removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY, DRAFT_NEW_ID_KEY);
         draftIdRef.current = null;
         setDraftId(null);
       }
@@ -229,7 +235,7 @@ export function useDraftAutosave(fields: DraftFields) {
     } finally {
       setDraftChecked(true);
     }
-  }, [DRAFT_ID_KEY, DRAFT_KEY, DRAFT_UPDATED_AT_KEY, ownerId, storageScope]);
+  }, [DRAFT_ID_KEY, DRAFT_KEY, DRAFT_NEW_ID_KEY, DRAFT_UPDATED_AT_KEY, ownerId, storageScope]);
 
   useEffect(() => {
     let cancelled = false;
@@ -392,13 +398,18 @@ export function useDraftAutosave(fields: DraftFields) {
     if (!force && currentDraftId && snapshot === lastServerSnapshot.current) return currentDraftId;
     publishedListing.current = null;
     const generation = saveGeneration.current;
+    // Et feilet forsøk kan ha opprettet raden før svaret gikk tapt. Samme ID
+    // til et svar bekrefter utkastet, også etter omlasting, gjør at neste
+    // forsøk oppdaterer raden i stedet for å opprette en ny.
+    const newId = currentDraftId ? null : (readItem(DRAFT_NEW_ID_KEY) ?? crypto.randomUUID());
+    if (newId) writeItem(DRAFT_NEW_ID_KEY, newId);
     const save = (async () => {
       try {
         const result = await saveDraftListing({
           data: {
             expected_user_id: ownerId,
             ...ownerPayload(ownerOrganizationId, organizationLocationId),
-            ...(currentDraftId ? { id: currentDraftId } : {}),
+            ...(currentDraftId ? { id: currentDraftId } : { new_id: newId! }),
             ...(currentDraftId && draftUpdatedAtRef.current
               ? { expected_updated_at: draftUpdatedAtRef.current }
               : {}),
@@ -435,6 +446,7 @@ export function useDraftAutosave(fields: DraftFields) {
           return null;
         }
         setDraftSaveMessage(null);
+        removeItems(DRAFT_NEW_ID_KEY);
         draftIdRef.current = result.id;
         if (result.updated_at) {
           draftUpdatedAtRef.current = result.updated_at;
@@ -451,6 +463,7 @@ export function useDraftAutosave(fields: DraftFields) {
           return null;
         }
         lastServerSnapshot.current = snapshot;
+        failedRevision.current = null;
         setLastSaved(new Date());
         setDraftSaveError(false);
         setDraftSaveConflict(false);
@@ -460,6 +473,7 @@ export function useDraftAutosave(fields: DraftFields) {
         return result.id;
       } catch (error) {
         if (saveGeneration.current === generation && isCurrent()) {
+          failedRevision.current = saveRevision;
           draftSaveMessageRef.current = formatErrorMessage(
             error,
             "Utkastet kunne ikke lagres. Innholdet er beholdt lokalt. Prøv igjen senere.",
@@ -497,6 +511,7 @@ export function useDraftAutosave(fields: DraftFields) {
     if (!authenticated || !ownerId || !isCurrent() || publishPaused.current) return true;
     if (draftSavingStopped.current || draftRestorePending.current) return true;
     if (draftIdRef.current !== listingId) return false;
+    const imageRevision = localDraftRevision.current;
     const run = (async () => {
       const images = latestImages.current;
       const remotes = new Map<string, RemoteImage>();
@@ -538,12 +553,14 @@ export function useDraftAutosave(fields: DraftFields) {
         }
         if (!isCurrent()) return false;
         if (uploaded || images.some((image) => !image.remote?.synced)) keepRemotes(true);
+        failedRevision.current = null;
         draftSaveMessageRef.current = null;
         setDraftSaveMessage(null);
         setDraftSaveError(false);
         return true;
       } catch (error) {
         if (!isCurrent()) return false;
+        failedRevision.current = imageRevision;
         // Behold opplastingene, så neste forsøk ikke laster opp på nytt.
         if (uploaded) keepRemotes(false);
         draftSaveMessageRef.current = formatErrorMessage(
@@ -589,9 +606,19 @@ export function useDraftAutosave(fields: DraftFields) {
   // Auto-save draft to Supabase every 30 seconds when form has enough data
   useEffect(() => {
     const interval = window.setInterval(() => {
+      if (failedRevision.current === localDraftRevision.current) return;
       void saveDraftWithImagesRef.current();
     }, 30_000);
-    return () => window.clearInterval(interval);
+    // Feilen kan ha vært nettet: når det kommer tilbake, får neste runde ett
+    // nytt forsøk (ett per online-hendelse, så ingen løkke).
+    const retryWhenOnline = () => {
+      failedRevision.current = null;
+    };
+    window.addEventListener("online", retryWhenOnline);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("online", retryWhenOnline);
+    };
   }, [
     title,
     description,
@@ -727,10 +754,11 @@ export function useDraftAutosave(fields: DraftFields) {
     publishedListing.current = null;
     draftSavingStopped.current = stopAutosave;
     saveGeneration.current += 1;
+    failedRevision.current = null;
     latestLocalDraft.current = null;
     localDraftRevision.current += 1;
     lastImageSync.current = null;
-    removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY);
+    removeItems(DRAFT_KEY, DRAFT_ID_KEY, DRAFT_UPDATED_AT_KEY, DRAFT_NEW_ID_KEY);
     draftUpdatedAtRef.current = null;
     draftConflictRef.current = false;
     setDraftSaveConflict(false);

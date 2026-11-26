@@ -7,7 +7,10 @@ const native = vi.hoisted(() => ({ isNative: vi.fn(() => false), takeNativePhoto
 vi.mock("@/lib/native", () => native);
 const toast = vi.hoisted(() => ({ showErrorToast: vi.fn() }));
 vi.mock("@/lib/toast", () => toast);
-vi.mock("@/lib/image-compression", () => ({ compressImage: async (file: File) => file }));
+const compression = vi.hoisted(() => ({
+  compressImage: vi.fn(async (file: File, _variant?: string) => file),
+}));
+vi.mock("@/lib/image-compression", () => compression);
 vi.mock("@/lib/image-metadata", () => ({ isAiGeneratedImage: async () => false }));
 
 import { ImageUploader, type PendingImage } from "./image-uploader";
@@ -23,6 +26,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  compression.compressImage.mockImplementation(async (file: File) => file);
 });
 
 function image(id: string, aiGenerated?: boolean): PendingImage {
@@ -47,6 +51,26 @@ describe("ImageUploader", () => {
     expect(toast.showErrorToast).toHaveBeenCalledWith(
       "En annonse kan ha maksimalt 100 bilder. De 2 første er lagt til.",
     );
+  });
+
+  it("viser fremdrift og plassholdere mens bildene behandles", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    compression.compressImage.mockImplementation(async (file: File, variant?: string) => {
+      if (file.name === "b.jpg" && variant === "listing") await blocked;
+      return file;
+    });
+    const onChange = vi.fn();
+    const { container } = render(<ImageUploader images={[]} onChange={onChange} />);
+    const files = ["a", "b"].map((id) => new File(["foto"], `${id}.jpg`, { type: "image/jpeg" }));
+
+    fireEvent.change(screen.getByLabelText("Velg bilder"), { target: { files } });
+
+    expect(await screen.findByText("Behandler bilde 2 av 2…")).toBeTruthy();
+    expect(container.querySelectorAll(".animate-pulse")).toHaveLength(1);
+    release();
+    await waitFor(() => expect(onChange).toHaveBeenCalledOnce());
+    expect(screen.queryByText(/Behandler bilde/)).toBeNull();
   });
 
   it("åpner filvelgeren for galleriet i appen, så KI-metadataen bevares", () => {

@@ -23,7 +23,7 @@ test("registrerer seg, publiserer med bilde, søker, sender melding, rapporterer
   try {
     await page.goto("/auth?mode=signup");
     await hydrated(page);
-    await page.getByLabel("Visningsnavn").fill("Open testselger");
+    await expect(page.getByLabel("Visningsnavn")).toHaveValue("");
     await page.getByLabel("E-post").fill(sellerEmail);
     await page.getByLabel("Passord", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Opprett konto", exact: true }).click();
@@ -33,6 +33,24 @@ test("registrerer seg, publiserer med bilde, søker, sender melding, rapporterer
     const sellerId = created.users.find((user) => user.email === sellerEmail)?.id;
     expect(sellerId).toBeTruthy();
     userIds.push(sellerId!);
+
+    const seller = created.users.find((user) => user.id === sellerId)!;
+    expect(seller.user_metadata).toMatchObject({ display_name: sellerEmail.split("@")[0] });
+    for (const key of ["first_name", "last_name", "show_last_name"]) {
+      expect(seller.user_metadata).not.toHaveProperty(key);
+    }
+    await page.goto("/profil");
+    await expect(page.getByLabel("Visningsnavn")).toHaveValue(sellerEmail.split("@")[0]);
+    await expect(page.getByLabel("Etternavn (valgfritt)")).toHaveCount(0);
+    await page.getByLabel("Visningsnavn").fill("Open oppdatert selger");
+    await page.getByRole("button", { name: "Lagre profil" }).click();
+    await expect(page.getByText("Profil oppdatert", { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel("Visningsnavn")).toHaveValue("Open oppdatert selger");
+    await page.goto(`/bruker/${sellerId}`);
+    await expect(
+      page.getByRole("heading", { name: "Open oppdatert selger", exact: true }),
+    ).toBeVisible();
 
     await page.goto("/ny-annonse?type=sell");
     await hydrated(page);

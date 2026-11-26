@@ -20,6 +20,7 @@ import {
   BadgeCheck,
   Inbox,
   Mail,
+  BellRing,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useIsAdmin } from "@/hooks/use-user-roles";
@@ -71,6 +72,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
       { to: "/admin/bedrifter", label: "Bedrifter", icon: BadgeCheck },
       { to: "/admin/proff-abonnement", label: "Proff-abonnement", icon: Receipt },
       { to: "/admin/tilbakemeldinger", label: "Tilbakemeldinger", icon: MessageSquareHeart },
+      { to: "/admin/systemvarsler", label: "Systemvarsler", icon: BellRing },
     ],
   },
   {

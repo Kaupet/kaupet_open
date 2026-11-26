@@ -18,9 +18,12 @@ bun run dev
 Uten Supabase-variabler på serveren viser oppstartsveiviseren hvilke verdier
 som trengs for en lokal stack, et prosjekt hos Supabase eller selvdriftet
 Supabase, også `VITE_SUPABASE_URL` og `VITE_SUPABASE_PUBLISHABLE_KEY` som
-nettleseren bruker. Lokalt står de i `bunx supabase status -o env`. Legg dem i `.env` og
-start dev-serveren på nytt. Veiviseren ber deretter om service-role-nøkkelen og
-oppretter første admin bare når databasen ennå ikke har en admin.
+nettleseren bruker. Lokalt står de i `bunx supabase status -o env`. Legg alle i
+`.env`, også `SUPABASE_SERVICE_ROLE_KEY`, og start dev-serveren på nytt; uten
+`SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` og `SUPABASE_SERVICE_ROLE_KEY` viser
+veiviseren hvilke som mangler. Veiviseren ber deretter om service-role-nøkkelen
+én gang til for å bekrefte at du eier databasen, og oppretter første admin bare
+når databasen ennå ikke har en admin.
 `supabase start` bruker migrasjonene og eksempelkategoriene. `supabase db reset`
 sletter lokale data og skal bare brukes når du vil starte helt på nytt.
 
@@ -95,6 +98,41 @@ Sett en egen tilfeldig `RATE_LIMIT_HMAC_SECRET`. Open bruker ikke Turnstile
 eller andre eksterne CAPTCHA-tjenester. Deaktiver også CAPTCHA i Supabase
 Auth hvis prosjektet tidligere var konfigurert med dette. Behold RLS,
 servervalidering, CSRF-beskyttelse og rategrenser.
+
+## Mobilapp med Capacitor
+
+Mobilappen laster den publiserte tjenesten i en WebView. Dermed kjører
+innlogging, annonser og TanStack Starts serverfunksjoner på samme HTTPS-domene.
+Inne i appen får brukeren en fast bunnmeny og større trykkflater på forsiden.
+
+1. Sett `VITE_SITE_URL` og Supabase sine omdirigeringsadresser til tjenestens
+   endelige domene. Bygg og publiser nettjenesten, og fullfør oppstartsveiviseren.
+2. Sett `CAPACITOR_APP_ID`, `CAPACITOR_APP_NAME` og `CAPACITOR_APP_URL` i
+   prosjektets `.env`. Bruk en app-ID som `org.example.marked`, et eget
+   visningsnavn og tjenestens HTTPS-adresse uten sti. Installer
+   [verktøyene for Capacitor 8](https://capacitorjs.com/docs/getting-started/environment-setup).
+3. **iOS på Mac.** Kjør `bun run cap add ios --packagemanager SPM` og
+   `bun run cap open ios`. Legg til `NSCameraUsageDescription`,
+   `NSPhotoLibraryUsageDescription` og `NSPhotoLibraryAddUsageDescription` i
+   `ios/App/App/Info.plist` med en forklaring på bildebruken, og
+   `NSLocationWhenInUseUsageDescription` med en forklaring på posisjonsbruken.
+   Velg en simulator og trykk Run i Xcode. For distribusjon velger du
+   signeringsteam og bygger et arkiv via Product → Archive.
+4. **Android.** Kjør `bun run cap add android` og `bun run cap open android`.
+   Legg til tillatelsene `android.permission.ACCESS_COARSE_LOCATION` og
+   `android.permission.ACCESS_FINE_LOCATION` i
+   `android/app/src/main/AndroidManifest.xml` for posisjonsbruken.
+   Velg en emulator og trykk Run i Android Studio. For distribusjon bygger du
+   en signert AAB via Build → Generate Signed App Bundle or APK.
+5. Prøv innlogging, bilder og navigasjon på begge plattformer. Legg inn egne
+   appikoner før distribusjon. Kjør `bun run cap sync` og bygg på nytt når du
+   endrer Capacitor-oppsettet. Endringer i selve nettjenesten publiseres hos
+   nettverten.
+
+Capacitor beskriver `server.url` som en innstilling for live reload.
+Her brukes den for å laste den selvdriftede tjenesten. Appen krever
+nettforbindelse, og operatøren må vurdere løsningen mot kravene for ønsket
+distribusjonskanal. [Capacitor-konfigurasjon](https://capacitorjs.com/docs/config).
 
 ## Planlagte jobber og personvern
 

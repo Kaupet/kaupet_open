@@ -3,6 +3,7 @@ import type { ListingCardData } from "@/lib/listing-card-data";
 
 /** Ingen bedriftskolonne på annonser. */
 export const LISTING_ORGANIZATION_COLUMN = "";
+export const LISTING_ORGANIZATION_CHAT_COLUMNS = "";
 
 export function listingOrganizationId(_listing: object | null | undefined): string | null {
   return null;

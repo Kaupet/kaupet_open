@@ -1,3 +1,4 @@
+import { EDITION } from "@/lib/edition";
 import { Suspense, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import {
@@ -11,10 +12,14 @@ import {
   Check,
   Send,
   MoreVertical,
+  Info,
+  Camera as CameraIcon,
 } from "lucide-react";
 
+import { canAddSpin360Capture, spin360OwnerVariant } from "@/lib/spin-capture";
 import { signListingImageUrls } from "@/lib/storage";
 import { useIsNative } from "@/hooks/use-is-native";
+import { useFormFactor } from "@/hooks/use-form-factor";
 import { useNativePromotionAllowed } from "@/hooks/use-native-promotion-allowed";
 import { hapticImpact } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
@@ -40,6 +45,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { displayPriceNok, formatPrice } from "@/lib/format";
 import { STATUS_LABEL } from "@/lib/constants";
+import { DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ResponsiveOverlay, ResponsiveOverlayContent } from "@/components/ui/responsive-overlay";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export type Row = {
@@ -47,7 +54,7 @@ export type Row = {
   seller_id?: string;
   kaupet_code: string;
   title: string;
-  status: "draft" | "active" | "sold" | "archived" | "expired";
+  status: keyof typeof STATUS_LABEL;
   price_nok: number | null;
   is_free: boolean;
   city: string | null;
@@ -94,7 +101,10 @@ type RowActions = {
 type ListingRowProps = {
   row: Row;
   /** CategoryBehavior.spin360 for the listing's category — gates the
-   * native-only "legg til 360°-opptak"-action (draft/active rows only). */
+   * native-only "Legg til 360°-opptak"-valget i overflow-menyen (kun
+   * utkast/aktive rader). `editOnly`-rader (bedriftens annonseliste) har ingen
+   * overflow-meny og får i stedet en egen 360°-knapp: kamera-opptak i appen,
+   * QR-kode i desktop-nettleser. Serveren krever endringsrett på annonsen. */
   spin360: boolean;
   activePromotion: { expires_at: string | null; is_gift: boolean } | null;
   busy: boolean;
@@ -123,9 +133,24 @@ export function ListingRow({
   editOnly = false,
 }: ListingRowProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [moderationOpen, setModerationOpen] = useState(false);
+  const [spin360Open, setSpin360Open] = useState(false);
   const native = useIsNative();
   const promotionAllowed = useNativePromotionAllowed();
   const Spin360CaptureLauncher = verticals.Spin360CaptureLauncher;
+  const Spin360QrPanel = verticals.Spin360QrPanel;
+  const [spin360QrOpen, setSpin360QrOpen] = useState(false);
+  const formFactor = useFormFactor();
+  const editOnlySpin360 =
+    !readOnly && editOnly
+      ? spin360OwnerVariant({
+          spin360,
+          status: row.status,
+          listingId: row.id,
+          isNative: native,
+          isDesktop: formFactor === "desktop",
+        })
+      : null;
 
   const imgUrl = row.cover_path ? signListingImageUrls([row.cover_path])[row.cover_path] : null;
 
@@ -150,10 +175,65 @@ export function ListingRow({
 
   const statusBadges = (
     <>
-      <Badge variant={row.status === "active" ? "default" : "secondary"} className="text-xs">
-        {/* En bortgitt gjenstand er ikke "solgt" — samme status, annen sannhet. */}
-        {row.status === "sold" && row.is_free ? "Gitt bort" : STATUS_LABEL[row.status]}
-      </Badge>
+      {row.status === "disabled" ? (
+        <>
+          <Button
+            type="button"
+            variant="ghost"
+            className="min-h-12 h-auto max-w-full gap-2 whitespace-normal px-2 text-left text-sm text-destructive"
+            aria-label={`Deaktivert av moderator: ${row.title}. Mer informasjon`}
+            onClick={() => setModerationOpen(true)}
+          >
+            {STATUS_LABEL.disabled}
+            <Info className="size-4 shrink-0" aria-hidden="true" />
+          </Button>
+          <ResponsiveOverlay open={moderationOpen} onOpenChange={setModerationOpen}>
+            <ResponsiveOverlayContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle>Deaktivert av moderator</DialogTitle>
+                <DialogDescription>
+                  Annonsen «{row.title}» er deaktivert av en moderator og er ikke synlig for andre
+                  brukere.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 text-sm text-muted-foreground">
+                <p>
+                  Du kan ikke redigere, reaktivere eller slette annonsen selv mens den er
+                  deaktivert.
+                </p>
+                {EDITION === "open" ? (
+                  <p>En moderator eller administrator må aktivere annonsen igjen.</p>
+                ) : (
+                  <>
+                    <p>
+                      Les begrunnelsen i samtalen om annonsen under Meldinger. Svar i samtalen for å
+                      avklare hva som må endres, få hjelp til retting eller be om en ny vurdering.
+                      En moderator eller administrator må aktivere annonsen igjen.
+                    </p>
+                    <p>
+                      Finner du ingen melding? Se Varsler, eller ta kontakt via Hjelp og kontakt.
+                    </p>
+                  </>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {EDITION !== "open" && (
+                  <Button asChild>
+                    <Link to="/meldinger" onClick={() => setModerationOpen(false)}>
+                      Åpne meldinger
+                    </Link>
+                  </Button>
+                )}
+              </div>
+            </ResponsiveOverlayContent>
+          </ResponsiveOverlay>
+        </>
+      ) : (
+        <Badge variant={row.status === "active" ? "default" : "secondary"} className="text-xs">
+          {/* En bortgitt gjenstand er ikke "solgt" — samme status, annen sannhet. */}
+          {row.status === "sold" && row.is_free ? "Gitt bort" : STATUS_LABEL[row.status]}
+        </Badge>
+      )}
       {row.status === "active" && d != null && (
         <span
           className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${expiryTone}`}
@@ -234,21 +314,7 @@ export function ListingRow({
             )}
           </p>
         </div>
-        {Spin360CaptureLauncher &&
-          !readOnly &&
-          spin360 &&
-          (row.status === "draft" || row.status === "active") && (
-            <Suspense fallback={null}>
-              <Spin360CaptureLauncher
-                listingId={row.id}
-                listingTitle={row.title}
-                label="Legg til 360°-opptak"
-                variant="ghost"
-                size="icon"
-              />
-            </Suspense>
-          )}
-        {!readOnly && editOnly && (
+        {!readOnly && editOnly && row.status !== "disabled" && (
           <Button size="icon" variant="ghost" className="shrink-0" asChild>
             <Link
               to="/$kaupetCode"
@@ -258,6 +324,18 @@ export function ListingRow({
             >
               <Pencil className="size-5" />
             </Link>
+          </Button>
+        )}
+        {editOnlySpin360 === "native-capture" && (
+          <Button
+            type="button"
+            size="icon"
+            variant="ghost"
+            className="shrink-0"
+            aria-label="Legg til 360°-opptak"
+            onClick={() => setSpin360Open(true)}
+          >
+            <CameraIcon className="size-5" />
           </Button>
         )}
         {!readOnly && !editOnly && (
@@ -275,16 +353,28 @@ export function ListingRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
-              <DropdownMenuItem asChild>
-                <Link
-                  to="/$kaupetCode"
-                  params={{ kaupetCode: row.kaupet_code }}
-                  search={{ edit: true }}
-                  className="flex items-center gap-2"
+              {row.status !== "disabled" && (
+                <DropdownMenuItem asChild>
+                  <Link
+                    to="/$kaupetCode"
+                    params={{ kaupetCode: row.kaupet_code }}
+                    search={{ edit: true }}
+                    className="flex items-center gap-2"
+                  >
+                    <Pencil className="size-4" /> Rediger
+                  </Link>
+                </DropdownMenuItem>
+              )}
+              {Spin360CaptureLauncher && spin360 && canAddSpin360Capture(row.status) && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    void hapticImpact("light");
+                    setSpin360Open(true);
+                  }}
                 >
-                  <Pencil className="size-4" /> Rediger
-                </Link>
-              </DropdownMenuItem>
+                  <CameraIcon className="size-4" /> Legg til 360°-opptak
+                </DropdownMenuItem>
+              )}
               {row.status === "active" && (
                 <>
                   {!activePromotion && promotionAllowed && (
@@ -315,20 +405,35 @@ export function ListingRow({
                   <RotateCcw className="size-4" /> Reaktiver
                 </DropdownMenuItem>
               )}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onClick={() => {
-                  void hapticImpact("medium");
-                  setDeleteOpen(true);
-                }}
-              >
-                <Trash2 className="size-4" /> Slett annonse
-              </DropdownMenuItem>
+              {row.status !== "disabled" && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={() => {
+                      void hapticImpact("medium");
+                      setDeleteOpen(true);
+                    }}
+                  >
+                    <Trash2 className="size-4" /> Slett annonse
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )}
         {!readOnly && !editOnly && deleteDialog}
+        {spin360Open && Spin360CaptureLauncher && (
+          <Suspense fallback={null}>
+            <Spin360CaptureLauncher
+              listingId={row.id}
+              listingTitle={row.title}
+              label="Legg til 360°-opptak"
+              autoStart
+              onDone={() => setSpin360Open(false)}
+            />
+          </Suspense>
+        )}
       </li>
     );
   }
@@ -375,11 +480,22 @@ export function ListingRow({
         </Link>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <Link to="/$kaupetCode" params={{ kaupetCode: row.kaupet_code }} search={{ edit: true }}>
-            <Button size="sm" variant="outline" disabled={busy}>
-              <Pencil className="size-4" /> Rediger
+          {row.status !== "disabled" && (
+            <Link
+              to="/$kaupetCode"
+              params={{ kaupetCode: row.kaupet_code }}
+              search={{ edit: true }}
+            >
+              <Button size="sm" variant="outline" disabled={busy}>
+                <Pencil className="size-4" /> Rediger
+              </Button>
+            </Link>
+          )}
+          {editOnlySpin360 === "qr" && (
+            <Button size="sm" variant="outline" onClick={() => setSpin360QrOpen(true)}>
+              <CameraIcon className="size-4" /> Legg til 360°-opptak
             </Button>
-          </Link>
+          )}
           {editOnly ? null : row.status === "active" ? (
             <>
               {activePromotion ? (
@@ -410,12 +526,12 @@ export function ListingRow({
             <Button size="sm" variant="outline" onClick={onPublishDraft} disabled={busy}>
               <Send className="size-4" /> Publiser
             </Button>
-          ) : (
+          ) : row.status === "sold" || row.status === "archived" ? (
             <Button size="sm" variant="outline" onClick={onReactivate} disabled={busy}>
               <RotateCcw className="size-4" /> Reaktiver
             </Button>
-          )}
-          {!editOnly && (
+          ) : null}
+          {!editOnly && row.status !== "disabled" && (
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button
@@ -448,6 +564,21 @@ export function ListingRow({
             </AlertDialog>
           )}
         </div>
+      )}
+      {Spin360QrPanel && (
+        <ResponsiveOverlay open={spin360QrOpen} onOpenChange={setSpin360QrOpen}>
+          <ResponsiveOverlayContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Legg til 360°-opptak</DialogTitle>
+              <DialogDescription>
+                Skann QR-koden med mobilen for å ta opptaket av {row.title}.
+              </DialogDescription>
+            </DialogHeader>
+            <Suspense fallback={null}>
+              <Spin360QrPanel listingId={row.id} />
+            </Suspense>
+          </ResponsiveOverlayContent>
+        </ResponsiveOverlay>
       )}
     </li>
   );

@@ -194,7 +194,9 @@ export function ListingActionsMenu({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
-          {isOwner ? (
+          {isOwner && listingStatus === "disabled" ? (
+            <DropdownMenuItem disabled>Deaktivert av moderator</DropdownMenuItem>
+          ) : isOwner ? (
             <>
               {listingStatus !== "sold" && (
                 <DropdownMenuItem onSelect={() => setMarkSoldOpen(true)}>

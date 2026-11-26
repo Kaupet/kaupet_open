@@ -4,6 +4,7 @@
 // scanner alt under src/routes/ som rutefiler uten prefikset. Vitest sitt
 // glob (src/**/*.test.tsx) treffer fila fortsatt.
 
+import { SITE_SHORT_NAME } from "@/lib/site";
 import type { ComponentType, ReactNode } from "react";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +35,10 @@ const mocks = vi.hoisted(() => ({
   infiniteState: {} as Record<string, unknown>,
   native: false,
   realQueryClient: null as import("@tanstack/react-query").QueryClient | null,
+}));
+
+vi.mock("@/features/moderation-threads/listing-moderation-banner", () => ({
+  ConversationListingModeration: () => <div data-testid="listing-moderation-banner" />,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -112,9 +117,6 @@ vi.mock("@/hooks/use-form-factor", () => ({
   useIsNarrow: () => true,
 }));
 vi.mock("@/hooks/use-keyboard-visible", () => ({ useKeyboardVisible: () => false }));
-vi.mock("@/features/business-account/use-business-membership", () => ({
-  useBusinessMembership: () => ({ data: undefined }),
-}));
 vi.mock("@/lib/toast", () => ({ showSuccessToast: vi.fn(), showErrorToast: vi.fn() }));
 vi.mock("@/lib/storage", () => ({
   IMAGE_ACCEPT: "image/*",
@@ -125,6 +127,7 @@ vi.mock("@/lib/storage", () => ({
   describeImageError: vi.fn(),
 }));
 vi.mock("@/lib/messages.functions", () => ({ sendMessage: vi.fn() }));
+vi.mock("@/lib/admin-moderation.functions", () => ({ adminEnableListing: vi.fn() }));
 vi.mock("@/lib/image-compression", () => ({ compressImage: vi.fn() }));
 vi.mock("@/lib/blocks.functions", () => ({
   listMyBlocks: vi.fn(),
@@ -145,7 +148,12 @@ vi.mock("@/components/meldinger/message-list", () => ({
 }));
 vi.mock("@/components/meldinger/message-actions", () => ({ MessageActions: () => null }));
 vi.mock("@/components/meldinger/trade-panel", () => ({
-  TradePanel: ({ sale }: { sale: unknown }) => (sale ? <p>Salgspanel</p> : null),
+  TradePanel: ({ sale, showBlockMenu }: { sale: unknown; showBlockMenu: boolean }) => (
+    <>
+      {sale ? <p>Salgspanel</p> : null}
+      {showBlockMenu ? <p>Blokkeringsmeny</p> : null}
+    </>
+  ),
 }));
 vi.mock("@/components/trade-safety-advice", () => ({
   TradeSafetyAdvice: () => <p>Råd for trygg handel</p>,
@@ -857,3 +865,126 @@ it.skipIf(EDITION === "open")(
     expect(view.getByText("Gi Sykkelbedriften en vurdering")).toBeTruthy();
   },
 );
+
+it.each([false, true])(
+  "viser opphevingsbanneret bare i modereringstråden (merket: %s)",
+  (isModeration) => {
+    mocks.queryData = {
+      conversation: baseConv({
+        is_moderation: isModeration,
+        listing: { id: "listing-1", title: "Sykkel", status: "disabled", listing_images: [] },
+      }),
+      "my-blocks": [],
+      "blocks-against-me": [],
+    };
+    const { queryByTestId } = render(<ConversationPage />);
+    expect(queryByTestId("listing-moderation-banner") !== null).toBe(isModeration);
+  },
+);
+
+it.each([
+  { isModeration: false, blocks: [], menu: true },
+  { isModeration: true, blocks: [], menu: false },
+  {
+    isModeration: true,
+    blocks: [{ id: "block-1", scope: "all", blocked_id: "seller-1", conversation_id: null }],
+    menu: true,
+  },
+])(
+  "viser blokkeringsmenyen utenfor modereringstråder og for å oppheve en blokkering (%o)",
+  ({ isModeration, blocks, menu }) => {
+    mocks.queryData = {
+      conversation: baseConv({ is_moderation: isModeration }),
+      "my-blocks": blocks,
+      "blocks-against-me": [],
+    };
+    const view = render(<ConversationPage />);
+    fireEvent.click(view.getByRole("button", { name: /åpne annonsevalg/ }));
+    expect(view.queryAllByText("Blokkeringsmeny").length > 0).toBe(menu);
+  },
+);
+
+it.each(
+  EDITION === "open"
+    ? []
+    : [
+        {
+          sellerId: "user-1",
+          text: "Kontoen din er suspendert, så du kan ikke svare i denne samtalen.",
+        },
+        { sellerId: "seller-1", text: "Selgeren er suspendert, så samtalen er stengt." },
+      ],
+)(
+  "viser i tråden at selgeren er suspendert, og stenger skrivefeltet (%o)",
+  ({ sellerId, text }) => {
+    mocks.queryData = {
+      conversation: baseConv({
+        is_moderation: true,
+        seller_id: sellerId,
+        threadStatus: "suspended",
+      }),
+      "my-blocks": [],
+      "blocks-against-me": [],
+    };
+    const view = render(<ConversationPage />);
+    expect(view.getByRole("status").textContent).toBe(text);
+    expect(view.getByPlaceholderText("Samtalen er stengt")).toHaveProperty("disabled", true);
+  },
+);
+
+it.each(
+  EDITION === "open"
+    ? []
+    : [
+        { name: "egen", mine: [{ id: "b", scope: "all", blocked_id: "seller-1" }], theirs: [] },
+        { name: "selgerens", mine: [], theirs: [{ blocker_id: "seller-1", scope: "all" }] },
+      ],
+)("lar en moderator skrive selv om det finnes en privat blokkering ($name)", ({ mine, theirs }) => {
+  mocks.queryData = {
+    conversation: baseConv({
+      is_moderation: true,
+      moderationMember: { conversation_id: "conv-1", last_read_at: null, deleted_at: null },
+    }),
+    "my-blocks": mine,
+    "blocks-against-me": theirs,
+  };
+  const view = render(<ConversationPage />);
+  expect(view.getByPlaceholderText("Skriv en melding…")).toHaveProperty("disabled", false);
+  expect(view.queryByText(/Du har blokkert/)).toBeNull();
+});
+
+it.each(EDITION === "open" ? [false] : [false, true])(
+  "viser moderatoridentitet bare i offisielle samtaler (merket: %s)",
+  (isModeration) => {
+    mocks.queryData = {
+      conversation: baseConv({
+        buyer_id: "moderator-1",
+        seller_id: "user-1",
+        is_moderation: isModeration,
+        other: { id: "moderator-1", display_name: "Åse Nordmann", avatar_url: null },
+      }),
+      "my-blocks": [],
+      "blocks-against-me": [],
+    };
+    const { getByText, queryByText } = render(<ConversationPage />);
+    expect(
+      getByText((text) =>
+        text.startsWith(isModeration ? `med ${SITE_SHORT_NAME} (moderator)` : "med Åse Nordmann"),
+      ),
+    ).toBeTruthy();
+    if (isModeration) expect(queryByText(/med Åse Nordmann/)).toBeNull();
+  },
+);
+
+it.each([
+  ["moderatordeltaker", { conversation_id: "c", last_read_at: null, deleted_at: null }, 15_000],
+  ["vanlig deltaker", undefined, false],
+])("poller meldinger bare for %s", (_label, moderationMember, interval) => {
+  mocks.queryData = {
+    conversation: baseConv({ is_moderation: !!moderationMember, moderationMember }),
+    "my-blocks": [],
+    "blocks-against-me": [],
+  };
+  render(<ConversationPage />);
+  expect(lastQueryOptsFor("messages")?.refetchInterval).toBe(interval);
+});

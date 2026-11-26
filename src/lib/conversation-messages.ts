@@ -1,3 +1,4 @@
+import { MODERATION_MESSAGE_COLUMN } from "@/features/moderation-threads";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { MESSAGE_OFFER_COLUMN } from "@/components/meldinger/offers";
@@ -56,6 +57,8 @@ export type ConversationMessage = MessageCursor & {
   body: string;
   deleted_at: string | null;
   attachment_path?: string | null;
+  /** Settes av databasen: meldingen er sendt med et moderatoralias. */
+  from_moderator?: boolean;
   pending?: boolean;
   attachmentPreviewUrl?: string;
 };
@@ -73,7 +76,7 @@ export async function conversationMessagesPage(
   let query = client
     .from("messages")
     .select(
-      `id, conversation_id, sender_id, body, created_at, deleted_at, attachment_path${MESSAGE_OFFER_COLUMN}` as const,
+      `id, conversation_id, sender_id, body, created_at, deleted_at, attachment_path${MODERATION_MESSAGE_COLUMN}${MESSAGE_OFFER_COLUMN}` as const,
     )
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })

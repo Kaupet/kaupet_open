@@ -749,6 +749,78 @@ describe("useDraftAutosave", () => {
     expect(result.current.draftId).toBe("draft-id");
   });
 
+  it("en feilet opprettelse prøves ikke automatisk igjen før noe er endret", async () => {
+    vi.useFakeTimers();
+    saveDraftListingMock.mockRejectedValue(new Error("Load failed"));
+    const fields = { ...baseFields, title: "En fin sykkel" };
+    const { result, rerender } = renderHook((value) => useDraftAutosave(value), {
+      initialProps: fields,
+    });
+
+    // En time med åpen veiviser. Før rettingen: 120 kall uten utkast-ID.
+    for (let tick = 0; tick < 120; tick++) {
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+    }
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(1);
+    expect(result.current.draftSaveError).toBe(true);
+
+    rerender({ ...fields, title: "En fin sykkel, lite brukt" });
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+
+    const sent = saveDraftListingMock.mock.calls.map(([{ data }]) => data);
+    expect(sent).toHaveLength(2);
+    expect(sent.every((data) => data.id === undefined)).toBe(true);
+    // Svaret kan ha gått tapt etter at raden ble opprettet: samme ID hver gang.
+    expect(sent[1].new_id).toBe(sent[0].new_id);
+  });
+
+  it("prøver én gang til når nettet kommer tilbake etter en feil", async () => {
+    vi.useFakeTimers();
+    saveDraftListingMock.mockRejectedValue(new Error("Load failed"));
+    renderHook(() => useDraftAutosave({ ...baseFields, title: "En fin sykkel" }));
+
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      window.dispatchEvent(new Event("online"));
+    });
+    for (let tick = 0; tick < 10; tick++) {
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+    }
+    expect(saveDraftListingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("opprettelses-ID-en overlever omlasting og fjernes når utkastet er bekreftet", async () => {
+    saveDraftListingMock.mockRejectedValueOnce(new Error("Load failed")).mockResolvedValue({
+      id: "draft-1",
+      updated_at: "2026-11-16T10:00:00Z",
+    });
+    const fields = { ...baseFields, title: "En fin sykkel" };
+    const first = renderHook(() => useDraftAutosave(fields));
+    await act(() => first.result.current.saveDraftToSupabase());
+    first.unmount();
+
+    const { result } = renderHook(() => useDraftAutosave(fields));
+    await act(() =>
+      result.current.restoreDraft({
+        setValue: vi.fn(),
+        setSelectedParentId: vi.fn(),
+        setLocationMethod: vi.fn(),
+        setAttributes: vi.fn(),
+        setCoords: vi.fn(),
+      }),
+    );
+    await act(() => result.current.saveDraftToSupabase({ force: true }));
+    await act(() => result.current.saveDraftToSupabase({ force: true }));
+
+    const [failed, retried, updated] = saveDraftListingMock.mock.calls.map(([{ data }]) => data);
+    expect(failed.new_id).toEqual(expect.any(String));
+    expect(retried.new_id).toBe(failed.new_id);
+    expect(updated).toMatchObject({ id: "draft-1" });
+    expect(updated.new_id).toBeUndefined();
+  });
+
   it("lagrer lokalt ved hidden uten å starte server-save", () => {
     localStorage.setItem(DRAFT_ID_KEY, "draft-id");
     localStorage.setItem(DRAFT_UPDATED_AT_KEY, "old-version");

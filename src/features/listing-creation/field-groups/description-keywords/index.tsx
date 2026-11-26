@@ -8,7 +8,7 @@ import { FieldValid } from "../field-valid";
 import { RequiredMark } from "../required-mark";
 
 /**
- * Description textarea. Rendered with a fixed-height flex-fill wrapper on
+ * Description textarea. Rendered with a flex-fill wrapper on
  * native (its own dedicated page) and plain on web (inline within a larger
  * scrolling page) — matches each platform's original wrapper verbatim.
  *
@@ -55,6 +55,7 @@ export function DescriptionField({
         data-testid="listing-description-textarea"
         rows={native ? undefined : 5}
         className={native ? "flex-1 resize-none min-h-0" : undefined}
+        data-fill-on-focus={native || undefined}
         placeholder={placeholder}
         aria-required="true"
         aria-invalid={!!errors.description}
@@ -70,7 +71,14 @@ export function DescriptionField({
   );
 
   if (native) {
-    return <section className="flex flex-1 flex-col gap-2 min-h-0">{field}</section>;
+    return (
+      // data-scroll-anchor: skallet scroller seksjonen (etikett + felt) til
+      // toppen av kortet ved fokus og tastatur. Høyden over tastaturet
+      // settes i styles.css (data-fill-on-focus), så ingen JS måler layout.
+      <section data-scroll-anchor className="flex flex-1 flex-col gap-2">
+        {field}
+      </section>
+    );
   }
   return <section className="space-y-2">{field}</section>;
 }

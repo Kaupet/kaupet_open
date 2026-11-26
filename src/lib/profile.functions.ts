@@ -7,26 +7,17 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { pathFromPublicImageUrl } from "@/lib/image-url";
 import { countSalesBySeller } from "@/lib/sales.functions";
 
-const profileSchema = z.object({
-  displayName: z.string().trim().min(2, "Minst 2 tegn").max(80),
-});
+import { profileNameSchema } from "@/lib/profile-name";
+import { readOwnProfileName, writeOwnProfileName } from "@/lib/profile-name.server";
+
+export const getOwnProfile = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(({ context }) => readOwnProfileName(context.supabase, context.userId));
 
 export const updateOwnProfile = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: unknown) => profileSchema.parse(input))
-  .handler(async ({ data, context }) => {
-    const supabaseAdmin = await getSupabaseAdmin();
-    const { data: profile, error } = await supabaseAdmin
-      .from("profiles")
-      .update({ display_name: data.displayName })
-      .eq("id", context.userId)
-      .select("id, display_name, avatar_url")
-      .single();
-    if (error) {
-      throw await toClientError("database", error);
-    }
-    return profile;
-  });
+  .validator((input: unknown) => profileNameSchema.parse(input))
+  .handler(({ data, context }) => writeOwnProfileName(context.userId, data));
 
 export const updateOwnAvatar = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
