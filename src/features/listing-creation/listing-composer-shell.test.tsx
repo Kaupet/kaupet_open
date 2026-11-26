@@ -20,6 +20,9 @@ const { hapticNotification, hapticSelection } = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/haptics", () => ({ hapticNotification, hapticSelection }));
 
+const keyboard = vi.hoisted(() => ({ visible: false }));
+vi.mock("@/hooks/use-keyboard-visible", () => ({ useKeyboardVisible: () => keyboard.visible }));
+
 function renderShell({
   firstStep = false,
   footer = "Fortsett",
@@ -62,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  keyboard.visible = false;
   cleanup();
   vi.clearAllMocks();
 });
@@ -114,7 +118,8 @@ describe("ListingComposerShell", () => {
     requestAnimationFrame.mockRestore();
   });
 
-  it("flytter fremdriftsviseren inn i headeren når native-kortet scrolles", () => {
+  it("viser fremdrift og kategoristi fast i native-headeren, uten bytte ved scroll", () => {
+    const onEditCategory = vi.fn();
     render(
       <ListingComposerShell
         title="Ny annonse"
@@ -123,6 +128,8 @@ describe("ListingComposerShell", () => {
         native
         onCancel={vi.fn()}
         progress={<span>Steg 2 av 5</span>}
+        categoryLabel="Kjøretøy › Bil"
+        onEditCategory={onEditCategory}
         footer={null}
         firstStep={false}
       >
@@ -130,19 +137,19 @@ describe("ListingComposerShell", () => {
       </ListingComposerShell>,
     );
     const header = screen.getByRole("banner");
-    const card = screen.getByTestId("composer-page-title");
-    expect(header.textContent).not.toContain("Steg 2 av 5");
+    expect(header.textContent).toContain("Steg 2 av 5");
+    expect(header.textContent).toContain("Kjøretøy › Bil");
+    expect(header.textContent).not.toContain("Ny annonse");
+    expect(screen.getAllByText("Steg 2 av 5")).toHaveLength(1);
+    expect(screen.getAllByText("Kjøretøy › Bil")).toHaveLength(1);
 
+    const card = screen.getByTestId("composer-page-title");
     card.scrollTop = 40;
     fireEvent.scroll(card);
     expect(header.textContent).toContain("Steg 2 av 5");
-    expect(header.textContent).not.toContain("Ny annonse");
-    expect(screen.getAllByText("Steg 2 av 5")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Avbryt annonseopprettelse" })).toBeTruthy();
 
-    card.scrollTop = 0;
-    fireEvent.scroll(card);
-    expect(header.textContent).toContain("Ny annonse");
+    fireEvent.click(screen.getByRole("button", { name: "Kjøretøy › Bil" }));
+    expect(onEditCategory).toHaveBeenCalledOnce();
   });
 
   it("skjuler Forrige på første native steg", () => {
@@ -414,5 +421,202 @@ describe("ListingComposerShell", () => {
     expect(hapticNotification).toHaveBeenCalledWith("error");
     page.dispatchEvent(new Event("webkitAnimationEnd", { bubbles: true }));
     await waitFor(() => expect(page.getAttribute("aria-invalid")).toBeNull());
+  });
+
+  it("markerer native-skallet når tastaturet er åpent, så header og bunnlinje kan skjules", () => {
+    keyboard.visible = true;
+    const { container } = renderShell();
+    const shell = container.querySelector(".native-composer-shell");
+    expect(shell?.hasAttribute("data-keyboard-open")).toBe(true);
+    // Headeren ligger i et data-composer-chrome-omslag; kortet gjør ikke det.
+    expect(screen.getByRole("banner").closest("[data-composer-chrome]")).not.toBeNull();
+    expect(screen.getByTestId("composer-page-title").closest("[data-composer-chrome]")).toBeNull();
+  });
+
+  describe("scroll til fokusert felt (native)", () => {
+    function renderWithFields({ native = true }: { native?: boolean } = {}) {
+      const ui = () => (
+        <ListingComposerShell
+          title="Ny annonse"
+          pageKey="description"
+          pageTitle="Beskrivelse"
+          native={native}
+          onCancel={vi.fn()}
+          firstStep={false}
+          footer={null}
+        >
+          <label htmlFor="mileage">Kilometerstand</label>
+          <input id="mileage" />
+          <section data-scroll-anchor data-testid="anchor">
+            <label htmlFor="description">Beskrivelse</label>
+            <textarea id="description" />
+          </section>
+        </ListingComposerShell>
+      );
+      const result = render(ui());
+      return { rerender: () => result.rerender(ui()) };
+    }
+
+    /** jsdom har ingen layout: gir kortet og målene faste posisjoner. */
+    function mockRects(rects: Map<() => Element, { top: number; height: number }>) {
+      const spy = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+        this: Element,
+      ) {
+        for (const [get, { top, height }] of rects) {
+          if (get() === this)
+            return { top, height, bottom: top + height, left: 0, right: 0, width: 0 } as DOMRect;
+        }
+        return { top: 0, height: 0, bottom: 0, left: 0, right: 0, width: 0 } as DOMRect;
+      });
+      return () => spy.mockRestore();
+    }
+    const card = () => screen.getByTestId("composer-page-description");
+
+    function runFrames() {
+      const frames: FrameRequestCallback[] = [];
+      const spy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+      return {
+        flush: () => {
+          while (frames.length) frames.shift()?.(0);
+        },
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    beforeEach(() => {
+      window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as never;
+      Element.prototype.scrollIntoView = vi.fn();
+    });
+
+    it("scroller seksjonen med data-scroll-anchor til toppen, som eneste scroll", () => {
+      const frames = runFrames();
+      try {
+        renderWithFields();
+        const textarea = screen.getByLabelText("Beskrivelse", { selector: "textarea" });
+        textarea.focus();
+        frames.flush();
+        const anchor = screen.getByTestId("anchor");
+        expect(anchor.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+        const calls = vi.mocked(Element.prototype.scrollIntoView).mock.contexts;
+        expect(calls.every((el) => el === anchor)).toBe(true);
+      } finally {
+        frames.restore();
+      }
+    });
+
+    it("sentrerer felt uten anker som før", () => {
+      const frames = runFrames();
+      try {
+        renderWithFields();
+        const input = screen.getByLabelText("Kilometerstand");
+        input.focus();
+        frames.flush();
+        expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts.at(-1)).toBe(input);
+        expect(Element.prototype.scrollIntoView).toHaveBeenLastCalledWith({
+          behavior: "smooth",
+          block: "center",
+        });
+      } finally {
+        frames.restore();
+      }
+    });
+
+    it("scroller ankeret på nytt når tastaturet åpnes", () => {
+      const frames = runFrames();
+      try {
+        const { rerender } = renderWithFields();
+        screen.getByLabelText("Beskrivelse", { selector: "textarea" }).focus();
+        frames.flush();
+        vi.mocked(Element.prototype.scrollIntoView).mockClear();
+
+        keyboard.visible = true;
+        rerender();
+        frames.flush();
+
+        const anchor = screen.getByTestId("anchor");
+        expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts).toEqual([anchor]);
+        expect(anchor.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+      } finally {
+        frames.restore();
+      }
+    });
+
+    it("scroller ikke på web når tastaturet rapporteres åpent", () => {
+      const frames = runFrames();
+      try {
+        keyboard.visible = true;
+        renderWithFields({ native: false });
+        screen.getByLabelText("Beskrivelse", { selector: "textarea" }).focus();
+        frames.flush();
+        expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+      } finally {
+        frames.restore();
+      }
+    });
+
+    it("lar ankeret stå når det allerede er øverst i kortet", () => {
+      const frames = runFrames();
+      const restore = mockRects(
+        new Map([
+          [card, { top: 0, height: 600 }],
+          [() => screen.getByTestId("anchor"), { top: 0, height: 500 }],
+        ]),
+      );
+      try {
+        const { rerender } = renderWithFields();
+        screen.getByLabelText("Beskrivelse", { selector: "textarea" }).focus();
+        keyboard.visible = true;
+        rerender();
+        frames.flush();
+        expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+      } finally {
+        restore();
+        frames.restore();
+      }
+    });
+
+    it("lar et helt synlig felt stå, og sentrerer et felt utenfor synsfeltet", () => {
+      const frames = runFrames();
+      const mileage = () => screen.getByLabelText("Kilometerstand");
+      const visible = mockRects(
+        new Map([
+          [card, { top: 0, height: 600 }],
+          [mileage, { top: 100, height: 56 }],
+        ]),
+      );
+      try {
+        renderWithFields();
+        mileage().focus();
+        frames.flush();
+        expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
+      } finally {
+        visible();
+      }
+
+      const hidden = mockRects(
+        new Map([
+          [card, { top: 0, height: 300 }],
+          [mileage, { top: 320, height: 56 }],
+        ]),
+      );
+      try {
+        mileage().blur();
+        mileage().focus();
+        frames.flush();
+        expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts).toEqual([mileage()]);
+      } finally {
+        hidden();
+        frames.restore();
+      }
+    });
+  });
+
+  it("markerer ikke webskallet når tastaturet rapporteres åpent", () => {
+    keyboard.visible = true;
+    const { container } = renderShell({ native: false });
+    expect(container.querySelector("[data-keyboard-open]")).toBeNull();
   });
 });

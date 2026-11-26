@@ -1,4 +1,8 @@
 import {
+  isModerationConversation,
+  MODERATION_CONVERSATION_COLUMN,
+} from "@/features/moderation-threads";
+import {
   CONVERSATION_ORGANIZATION_RELATION,
   organizationConversationAccess,
   organizationConversationAccessKey,
@@ -199,7 +203,7 @@ type AttachmentConversation = ConversationOrganizationFields & {
   seller_id: string;
 };
 
-const ATTACHMENT_CONVERSATION_SELECT = `id, buyer_id, seller_id${CONVERSATION_ORGANIZATION_RELATION}`;
+const ATTACHMENT_CONVERSATION_SELECT = `id${MODERATION_CONVERSATION_COLUMN}, buyer_id, seller_id${CONVERSATION_ORGANIZATION_RELATION}`;
 
 /** Samme deltakerregel som meldingene selv (messages-policyene og
  * send_message): kjøper, selger, eller en aktør med tilgang via annonsens eier. */
@@ -208,6 +212,8 @@ async function canUseConversationAttachments(
   userId: string,
   conversation: AttachmentConversation,
 ): Promise<boolean> {
+  // The caller loaded the row through RLS, which checks active moderation membership.
+  if (isModerationConversation(conversation)) return true;
   if (conversation.buyer_id === userId || conversation.seller_id === userId) return true;
   return organizationConversationAccess(supabase, userId, conversation);
 }
@@ -238,15 +244,21 @@ export const uploadMessageAttachment = createServerFn({ method: "POST" })
     if (!conv || !(await canUseConversationAttachments(context.supabase, context.userId, conv))) {
       throw new ClientError("Du er ikke deltaker i denne samtalen", 403);
     }
-    const otherPartyId = conv.buyer_id === context.userId ? conv.seller_id : conv.buyer_id;
-    const { data: blocked, error: blockError } = await context.supabase.rpc("is_blocked_between", {
-      _a: context.userId,
-      _b: otherPartyId,
-      _conversation_id: data.conversationId,
-    });
-    if (blockError) throw new Error("Kunne ikke sjekke blokkering mellom brukerne");
-    if (blocked !== false) {
-      throw new ClientError("Vedlegg kan ikke sendes mellom blokkerte brukere", 403);
+    // En privat blokkering gjelder ikke modereringstråden.
+    if (!isModerationConversation(conv)) {
+      const otherPartyId = conv.buyer_id === context.userId ? conv.seller_id : conv.buyer_id;
+      const { data: blocked, error: blockError } = await context.supabase.rpc(
+        "is_blocked_between",
+        {
+          _a: context.userId,
+          _b: otherPartyId,
+          _conversation_id: data.conversationId,
+        },
+      );
+      if (blockError) throw new Error("Kunne ikke sjekke blokkering mellom brukerne");
+      if (blocked !== false) {
+        throw new ClientError("Vedlegg kan ikke sendes mellom blokkerte brukere", 403);
+      }
     }
 
     await assertUserNotRateLimited(context.userId, "standard_upload");

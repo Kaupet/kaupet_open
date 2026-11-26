@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ completeSetup: vi.fn(), runSetupMigrations: vi.fn() }));
@@ -48,9 +49,13 @@ async function throughAdmin() {
   next(); // layout
 }
 
-it("uten vilkår og e-post slås begge av i .env", async () => {
+it("uten mobilapp, vilkår og e-post fullføres det vanlige weboppsettet", async () => {
   mocks.completeSetup.mockResolvedValue({ createdAdmin: true, examples: false });
   await throughAdmin();
+  expect(
+    (screen.getByRole("radio", { name: "Nei, bare nettleser" }) as HTMLInputElement).checked,
+  ).toBe(true);
+  next(); // mobilapp
   next(); // vilkår: «Nei» er standard
   next("Fullfør oppsettet"); // e-post: «Ingen» er standard
 
@@ -60,11 +65,13 @@ it("uten vilkår og e-post slås begge av i .env", async () => {
   expect(text).toContain('VITE_OPEN_EMAIL="false"');
   expect(text).toContain("enable_confirmations = false");
   expect(text).not.toContain("SMTP_PASS");
+  expect(screen.queryByRole("heading", { name: "Bygg mobilappen" })).toBeNull();
 });
 
 it("med vilkårssider og Resend gir SMTP-oppsett og Resend-nøkkel", async () => {
   mocks.completeSetup.mockResolvedValue({ createdAdmin: true, examples: false });
   await throughAdmin();
+  next(); // mobilapp
   fireEvent.click(screen.getByLabelText(/Ja, lag tomme sider/));
   next();
 
@@ -89,6 +96,29 @@ it("med vilkårssider og Resend gir SMTP-oppsett og Resend-nøkkel", async () =>
   await waitFor(() => expect(mocks.completeSetup).toHaveBeenCalled());
 });
 
+it("mobilappvalget beholdes ved tilbake og viser byggeguide for begge plattformer", async () => {
+  mocks.completeSetup.mockResolvedValue({ createdAdmin: true, examples: false });
+  const user = userEvent.setup();
+  await throughAdmin();
+  await user.click(screen.getByRole("radio", { name: "Nei, bare nettleser" }));
+  await user.keyboard("{ArrowDown}");
+  const yes = () =>
+    screen.getByRole("radio", { name: "Ja, ta med appoppsett og byggeguide" }) as HTMLInputElement;
+  expect(yes().checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Neste" }));
+  await user.click(screen.getByRole("button", { name: "Tilbake" }));
+  expect(yes().checked).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Neste" }));
+  await user.click(screen.getByRole("button", { name: "Neste" }));
+  await user.click(screen.getByRole("button", { name: "Fullfør oppsettet" }));
+  await screen.findByRole("heading", { name: "Bygg mobilappen" });
+  expect(screen.getByText("bun run cap add ios --packagemanager SPM")).toBeTruthy();
+  expect(screen.getByText("bun run cap add android")).toBeTruthy();
+  expect(screen.getByText("NSLocationWhenInUseUsageDescription")).toBeTruthy();
+  expect(screen.getByText("ACCESS_FINE_LOCATION")).toBeTruthy();
+  expect(screen.getByText(/CAPACITOR_APP_URL=/)).toBeTruthy();
+});
+
 it("uten servermiljø viser veiledning for valgt type instans", () => {
   render(
     <SetupGate status={{ reason: "mangler-miljo", configuredUrl: null, canMigrate: false }}>
@@ -96,6 +126,13 @@ it("uten servermiljø viser veiledning for valgt type instans", () => {
     </SetupGate>,
   );
   expect(screen.getByText("Velkommen til kaupet_open")).toBeTruthy();
+  for (const doc of ["LICENSE", "NOTICE"]) {
+    expect(screen.getByRole("link", { name: doc }).getAttribute("href")).toBe(
+      `https://github.com/Kaupet/kaupet_open/blob/main/${doc}`,
+    );
+  }
+  const developer = screen.getByRole("link", { name: /\/developer\/open$/ });
+  expect(developer.getAttribute("href")).toBe(`https://${developer.textContent}`);
   next(); // intro
   expect(document.body.textContent).toContain("127.0.0.1:54322");
   fireEvent.click(screen.getByLabelText(/Hos Supabase/));
@@ -143,4 +180,23 @@ it("stopper når nettleserdelen mangler Supabase-variablene", () => {
   next(); // intro
   expect(screen.getByRole("alert").textContent).toContain("VITE_SUPABASE_URL");
   expect(screen.queryByRole("button", { name: "Fortsett med denne databasen" })).toBeNull();
+});
+
+it("steg 1 viser hvilke servervariabler som mangler", () => {
+  render(
+    <SetupGate
+      status={{
+        reason: "mangler-miljo",
+        configuredUrl: null,
+        canMigrate: false,
+        missing: ["SUPABASE_SERVICE_ROLE_KEY"],
+      }}
+    >
+      app
+    </SetupGate>,
+  );
+  next(); // intro
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Serveren mangler SUPABASE_SERVICE_ROLE_KEY.Alle verdiene under må være satt før veiviseren kan fortsette.",
+  );
 });

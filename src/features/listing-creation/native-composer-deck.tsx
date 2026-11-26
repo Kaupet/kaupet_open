@@ -15,11 +15,16 @@ export function NativeComposerDeck({
   enabled = true,
   onBack,
   onForward,
+  fill = false,
   children,
 }: {
   enabled?: boolean;
   onBack?: () => void;
   onForward: () => Promise<ComposerNavigationResult>;
+  /** Decken fyller minst hele kortets høyde og videreformidler den som en
+   * flex-kolonne, så et barn med `flex-1` (beskrivelsesfeltet) tar resten av
+   * plassen. Innhold som er høyere enn kortet vokser videre og scrolles. */
+  fill?: boolean;
   children: ReactNode;
 }) {
   const startRef = useRef<{ x: number; y: number; pointerId: number; time: number } | null>(null);
@@ -99,12 +104,16 @@ export function NativeComposerDeck({
   }
 
   return (
-    <div className="overflow-hidden" data-testid="native-composer-deck">
+    <div
+      className={cn("overflow-hidden", fill && "flex min-h-full flex-col")}
+      data-testid="native-composer-deck"
+    >
       <div
         data-testid="native-composer-card"
         aria-busy={navigating || undefined}
         className={cn(
           "native-composer-motion touch-pan-y will-change-transform",
+          fill && "flex flex-1 flex-col",
           !dragging && "transition-transform motion-reduce:transition-none",
         )}
         style={{ transform: reduceMotion ? undefined : `translate3d(${offset}px, 0, 0)` }}

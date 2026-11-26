@@ -1,4 +1,15 @@
 import {
+  INBOX_MEMBER_COLUMNS,
+  INBOX_RELATION,
+  moderationThreadName,
+  queryModerationInbox,
+  setModerationInboxState,
+  useMyModeratorAlias,
+  withModerationInbox,
+  type ModerationInboxFields,
+  type ModerationInboxMember,
+} from "@/features/moderation-threads";
+import {
   conversationWtbListingId,
   WTB_CONVERSATION_COLUMN,
   WTB_CONVERSATION_RELATION,
@@ -37,15 +48,19 @@ import { SwipeToDeleteRow } from "@/components/swipe-to-delete-row";
 import { isUnread } from "@/lib/unread";
 import { lastConversationMessages, messagePreview } from "@/lib/conversation-messages";
 import { usePushStatus } from "@/hooks/use-push-status";
+import { useIsModerationStaff } from "@/hooks/use-user-roles";
 import { formatErrorMessage } from "@/lib/errors";
+import { ModerationBadge } from "@/features/moderation-threads/moderation-badge";
 import { SITE_NAME } from "@/lib/site";
 
 /** Kjøpsønsket en samtale gjelder (wtb_listings-joinen). */
 export type WtbListingRef = { id: string; title: string; max_price_nok: number | null };
 
 type ConversationRow = {
+  moderation_member?: ModerationInboxMember;
   id: string;
   buyer_id: string;
+  is_moderation?: boolean;
   seller_id: string;
   listing_id: string | null;
   wtb_listing: WtbListingRef | null;
@@ -97,9 +112,10 @@ type RawListingRel = {
   categories: { slug: string } | { slug: string }[] | null;
   listing_images: { storage_path: string; sort_order: number }[];
 };
-type RawConv = {
+type RawConv = ModerationInboxFields & {
   id: string;
   buyer_id: string;
+  is_moderation?: boolean;
   seller_id: string;
   listing_id: string | null;
   wtb_listing: WtbListingRef | WtbListingRef[] | null;
@@ -113,7 +129,8 @@ type RawConv = {
   seller?: RawProfile | RawProfile[] | null;
 };
 
-export function InboxPage() {
+/** `headingLevel="h2"` når innboksen står ved siden av en samtale, som eier sidens h1. */
+export function InboxPage({ headingLevel: Heading = "h1" }: { headingLevel?: "h1" | "h2" }) {
   const native = useIsNative();
   const { user } = useAuth();
   const qc = useQueryClient();
@@ -127,6 +144,8 @@ export function InboxPage() {
     },
   });
 
+  const { data: isModerationStaff } = useIsModerationStaff();
+  const moderatorAlias = useMyModeratorAlias();
   const {
     data: conversations,
     isLoading,
@@ -135,34 +154,39 @@ export function InboxPage() {
     refetch,
   } = useQuery({
     queryKey: ["my-conversations", user?.id, view],
+    // Realtime følger bare kjøper og selger. Moderatorer poller også uten tråder,
+    // ellers merker de ikke at en kollega har lagt dem til.
+    refetchInterval: isModerationStaff ? 30_000 : false,
     enabled: !!user,
     queryFn: async (): Promise<ConversationRow[]> => {
-      const trashCutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-      const visibility =
-        view === "inbox"
-          ? `and(buyer_id.eq.${user!.id},buyer_deleted_at.is.null),and(seller_id.eq.${user!.id},seller_deleted_at.is.null)`
-          : `and(buyer_id.eq.${user!.id},buyer_deleted_at.gte.${trashCutoff}),and(seller_id.eq.${user!.id},seller_deleted_at.gte.${trashCutoff})`;
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(
-          `id, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
+      const trash = view === "trash";
+      const { data, error } = await queryModerationInbox<RawConv>(user!.id, trash, (filter) =>
+        supabase
+          .from(INBOX_RELATION)
+          .select(
+            `id${INBOX_MEMBER_COLUMNS}, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
            listing:listings(id${LISTING_ORGANIZATION_COLUMN}, title, price_nok, is_free, status, attributes, categories(slug), listing_images(storage_path, sort_order))${WTB_CONVERSATION_RELATION},
            buyer:profiles!conversations_buyer_id_fkey(id, display_name, avatar_url, deleted_at),
            seller:profiles!conversations_seller_id_fkey(id, display_name, avatar_url, deleted_at)`,
-        )
-        .or(visibility)
-        .order("last_message_at", { ascending: false });
-      if (error) {
-        const { data: convs, error: e2 } = await supabase
-          .from("conversations")
-          .select(
-            `id, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
-             listing:listings(id${LISTING_ORGANIZATION_COLUMN}, title, price_nok, is_free, status, attributes, categories(slug), listing_images(storage_path, sort_order))${WTB_CONVERSATION_RELATION}`,
           )
-          .or(visibility)
-          .order("last_message_at", { ascending: false });
+          .or(filter)
+          .order("last_message_at", { ascending: false }),
+      );
+      if (error) {
+        const { data: rawConvs, error: e2 } = await queryModerationInbox<RawConv>(
+          user!.id,
+          trash,
+          (filter) =>
+            supabase
+              .from(INBOX_RELATION)
+              .select(
+                `id${INBOX_MEMBER_COLUMNS}, buyer_id, seller_id, listing_id${WTB_CONVERSATION_COLUMN}, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
+             listing:listings(id${LISTING_ORGANIZATION_COLUMN}, title, price_nok, is_free, status, attributes, categories(slug), listing_images(storage_path, sort_order))${WTB_CONVERSATION_RELATION}`,
+              )
+              .or(filter)
+              .order("last_message_at", { ascending: false }),
+        );
         if (e2) throw e2;
-        const rawConvs = (convs ?? []) as unknown as RawConv[];
         const ids = Array.from(new Set(rawConvs.flatMap((c) => [c.buyer_id, c.seller_id])));
         const { data: profiles } = await supabase
           .from("profiles")
@@ -177,11 +201,16 @@ export function InboxPage() {
           seller: pmap.get(c.seller_id) ?? null,
         }));
         return hideUnstartedForCounterpart(
-          await attachLastMessage(await withOrganizationSellers(enriched, user!.id)),
+          await attachLastMessage(
+            await withOrganizationSellers(
+              withModerationSenders(withModerationInbox(enriched)),
+              user!.id,
+            ),
+          ),
           user!.id,
         );
       }
-      const normalised = ((data ?? []) as unknown as RawConv[]).map((c) => ({
+      const normalised = data.map((c) => ({
         ...c,
         listing: Array.isArray(c.listing) ? c.listing[0] : c.listing,
         wtb_listing: (Array.isArray(c.wtb_listing) ? c.wtb_listing[0] : c.wtb_listing) ?? null,
@@ -189,7 +218,12 @@ export function InboxPage() {
         seller: (Array.isArray(c.seller) ? c.seller[0] : c.seller) ?? null,
       }));
       return hideUnstartedForCounterpart(
-        await attachLastMessage(await withOrganizationSellers(normalised, user!.id)),
+        await attachLastMessage(
+          await withOrganizationSellers(
+            withModerationSenders(withModerationInbox(normalised)),
+            user!.id,
+          ),
+        ),
         user!.id,
       );
     },
@@ -198,6 +232,7 @@ export function InboxPage() {
   const trashMut = useMutation({
     mutationFn: async ({ row, restore }: { row: ConversationRow; restore: boolean }) => {
       if (!user) throw new Error("Ikke innlogget");
+      if (row.moderation_member) return setModerationInboxState(row.id, !restore);
       const field = user.id === row.buyer_id ? "buyer_deleted_at" : "seller_deleted_at";
       const update =
         field === "buyer_deleted_at"
@@ -235,7 +270,11 @@ export function InboxPage() {
   const unreadByConv = useMemo(() => {
     const m = new Map<string, boolean>();
     for (const c of conversations ?? []) {
-      const myLastReadAt = c.buyer_id === user?.id ? c.buyer_last_read_at : c.seller_last_read_at;
+      const myLastReadAt = c.moderation_member
+        ? c.moderation_member.last_read_at
+        : c.buyer_id === user?.id
+          ? c.buyer_last_read_at
+          : c.seller_last_read_at;
       m.set(c.id, isUnread(c.last_message_at, c.last_message?.sender_id, user?.id, myLastReadAt));
     }
     return m;
@@ -285,12 +324,12 @@ export function InboxPage() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-10">
-      <NativePageHeader title="Meldinger" hideBack />
+      <NativePageHeader title="Meldinger" hideBack headingLevel={Heading} />
       {native && <PullToRefreshIndicator pullDistance={pullDistance} refreshing={refreshing} />}
       {!native && (
         <div className="flex items-center gap-3">
           <MessageCircle className="size-6 text-brand" />
-          <h1 className="font-display text-3xl tracking-tight">Meldinger</h1>
+          <Heading className="font-display text-3xl tracking-tight">Meldinger</Heading>
         </div>
       )}
       <p className="mt-1 text-sm text-muted-foreground">
@@ -420,7 +459,9 @@ export function InboxPage() {
                           .sort((a, b) => (a.last_message_at < b.last_message_at ? 1 : -1))
                           .map((c) => {
                             const other = user?.id === c.seller_id ? c.buyer : c.seller;
-                            const lastFromMe = c.last_message?.sender_id === user?.id;
+                            const lastFromMe =
+                              c.last_message?.sender_id === user?.id ||
+                              (!!moderatorAlias && c.last_message?.sender_id === moderatorAlias);
                             const unread = unreadByConv.get(c.id) ?? false;
                             const row = (
                               <div className="flex items-center">
@@ -450,6 +491,7 @@ export function InboxPage() {
                                         ? "Slettet bruker"
                                         : (other?.display_name ?? "Ukjent bruker")}
                                     </p>
+                                    {c.is_moderation && !c.moderation_member && <ModerationBadge />}
                                     <p
                                       className={`truncate text-xs ${unread ? "text-foreground" : "text-muted-foreground"}`}
                                     >
@@ -652,4 +694,22 @@ function formatRelative(iso: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days} d`;
   return formatDayMonth(iso);
+}
+
+function withModerationSenders<
+  T extends { id: string; is_moderation?: boolean; buyer: RawProfile | null },
+>(rows: T[]): T[] {
+  return rows.map((row) =>
+    row.is_moderation && row.buyer
+      ? {
+          ...row,
+          buyer: {
+            ...row.buyer,
+            display_name: moderationThreadName(),
+            deleted_at: null,
+            avatar_url: null,
+          },
+        }
+      : row,
+  );
 }

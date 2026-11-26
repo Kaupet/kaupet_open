@@ -7,6 +7,7 @@ export type RateLimitRule = { limit: number; windowSeconds: number };
 export const RATE_LIMIT_RULES: Record<string, RateLimitRule> = {
   geocoding: { limit: 50, windowSeconds: 60 },
   listing_creation: { limit: 10, windowSeconds: 3600 },
+  listing_creation_refund: { limit: 30, windowSeconds: 3600 },
   standard_upload: { limit: 50, windowSeconds: 60 },
 };
 

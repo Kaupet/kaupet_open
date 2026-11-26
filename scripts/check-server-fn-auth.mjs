@@ -42,6 +42,8 @@ const ALLOWLIST = {
     "public installation-state read; returns no credentials",
   "src/features/setup/setup.functions.ts#checkSetupConnection":
     "installation requires validated service-role credential",
+  "src/features/setup/setup.functions.ts#runSetupMigrations":
+    "first-time migration requires validated service-role credential and missing schema",
   "src/features/setup/setup.functions.ts#completeSetup":
     "first-admin installation requires validated service-role credential and state check",
   "src/lib/business/organization.functions.ts#getBusinessOrganization":

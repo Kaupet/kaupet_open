@@ -2,19 +2,19 @@ import { formatMonthYear, initials } from "@/lib/format";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
+import { FormProvider, useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { ProfileNameFields } from "@/components/profile-name-fields";
+import { profileNameSchema, type ProfileName } from "@/lib/profile-name";
 import { showSuccessToast, showErrorToast } from "@/lib/toast";
 import { Calendar, Camera, Loader2 } from "lucide-react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getMyProfileStats } from "@/lib/profile.functions";
+import { getOwnProfile, getMyProfileStats } from "@/lib/profile.functions";
 import { formatErrorMessage } from "@/lib/errors";
 import { updateOwnAvatar, updateOwnProfile } from "@/lib/profile.functions";
 import {
@@ -26,11 +26,6 @@ import {
 } from "@/lib/storage";
 import { compressImage } from "@/lib/image-compression";
 import { ProfileStats } from "@/components/profil/profile-stats";
-
-const profileSchema = z.object({
-  display_name: z.string().trim().min(2, "Minst 2 tegn").max(80),
-});
-type ProfileForm = z.infer<typeof profileSchema>;
 
 export function ProfileSection() {
   const queryClient = useQueryClient();
@@ -49,6 +44,7 @@ export function ProfileSection() {
   });
   const userId = userData?.id ?? null;
 
+  const getProfile = useServerFn(getOwnProfile);
   const {
     data: profile,
     isLoading,
@@ -57,15 +53,7 @@ export function ProfileSection() {
   } = useQuery({
     queryKey: ["profile-edit", userId],
     enabled: !!userId,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("display_name, avatar_url")
-        .eq("id", userId!)
-        .maybeSingle();
-      if (error) throw error;
-      return data;
-    },
+    queryFn: () => getProfile({}),
   });
 
   const getStats = useServerFn(getMyProfileStats);
@@ -78,18 +66,20 @@ export function ProfileSection() {
     queryFn: () => getStats({}),
   });
 
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors },
-  } = useForm<ProfileForm>({
-    defaultValues: { display_name: "" },
+  const form = useForm<ProfileName>({
+    resolver: zodResolver(profileNameSchema),
+    mode: "onTouched",
+    defaultValues: { firstName: "", lastName: "", showLastName: false },
   });
+  const { handleSubmit, reset } = form;
 
   useEffect(() => {
     if (profile) {
-      reset({ display_name: profile.display_name ?? "" });
+      reset({
+        firstName: profile.first_name,
+        lastName: profile.last_name,
+        showLastName: profile.show_last_name,
+      });
     }
   }, [profile, reset]);
 
@@ -97,9 +87,8 @@ export function ProfileSection() {
   const updateAvatar = useServerFn(updateOwnAvatar);
 
   const mutation = useMutation({
-    mutationFn: async (values: ProfileForm) => {
-      const parsed = profileSchema.parse(values);
-      await updateProfile({ data: { displayName: parsed.display_name } });
+    mutationFn: async (values: ProfileName) => {
+      await updateProfile({ data: values });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["profile-edit", userId] });
@@ -174,8 +163,8 @@ export function ProfileSection() {
         <CardHeader>
           <CardTitle>Profilinfo</CardTitle>
         </CardHeader>
-        <form onSubmit={handleSubmit((v) => mutation.mutate(v))}>
-          <CardContent className="flex items-center gap-5">
+        <form onSubmit={handleSubmit((v) => mutation.mutate(v))} noValidate>
+          <CardContent className="flex flex-col gap-5 sm:flex-row sm:items-start">
             <div className="flex shrink-0 flex-col items-center gap-2">
               <div className="relative">
                 <Avatar className="size-20">
@@ -217,12 +206,10 @@ export function ProfileSection() {
                 </p>
               )}
             </div>
-            <div className="max-w-xs flex-1 space-y-2">
-              <Label htmlFor="display_name">Visningsnavn</Label>
-              <Input id="display_name" {...register("display_name")} />
-              {errors.display_name && (
-                <p className="text-sm text-destructive">{errors.display_name.message}</p>
-              )}
+            <div className="w-full flex-1 space-y-4">
+              <FormProvider {...form}>
+                <ProfileNameFields />
+              </FormProvider>
             </div>
           </CardContent>
           <CardFooter className="justify-end border-t pt-6">

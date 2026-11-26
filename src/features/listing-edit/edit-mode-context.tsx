@@ -5,6 +5,9 @@ import type { ListingFieldPatch } from "./save-listing-field";
 
 export type FieldStatus = "idle" | "saving" | "saved" | "error";
 
+/** listingId for utkastet på «Se over» i annonseflyten, som ikke har en rad ennå. */
+export const DRAFT_LISTING_ID = "draft";
+
 export type ListingEditContextValue = {
   editMode: boolean;
   listingId: string;

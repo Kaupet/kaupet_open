@@ -1,3 +1,4 @@
+import { EDITION } from "@/lib/edition";
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -266,14 +267,27 @@ export function ListingsTab() {
             <DialogDescription>«{confirm?.title}»</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <Label htmlFor="reason">Begrunnelse</Label>
+            <Label htmlFor="reason">
+              {EDITION === "open" ? "Begrunnelse" : "Melding til selger"}
+            </Label>
             <Textarea
               id="reason"
+              aria-describedby={EDITION === "open" ? undefined : "reason-help"}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Brudd på retningslinjer, ulovlig innhold osv."
+              placeholder={
+                EDITION === "open"
+                  ? "Brudd på retningslinjer, ulovlig innhold osv."
+                  : "Forklar hva som må rettes, for eksempel hvilket regelbrudd annonsen har."
+              }
               maxLength={500}
             />
+            {EDITION !== "open" && (
+              <p id="reason-help" className="text-xs text-muted-foreground">
+                Selgeren får teksten ordrett, med fornavnet ditt som avsender. Den lagres også i
+                moderasjonsloggen. Ikke skriv interne notater her.
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirm(null)}>

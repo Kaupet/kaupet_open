@@ -14,6 +14,7 @@ export function MessageBubble({
   myId,
   startsGroup,
   lastInGroup,
+  senderLabel,
   attachmentUrl,
   interaction,
 }: {
@@ -21,6 +22,7 @@ export function MessageBubble({
   myId: string;
   startsGroup: boolean;
   lastInGroup: boolean;
+  senderLabel?: string | null;
   attachmentUrl?: string;
   /** Mangler for slettede og usendte meldinger: de har ingen meny. */
   interaction?: MessageInteraction;
@@ -90,6 +92,7 @@ export function MessageBubble({
     >
       {mine && toolbar}
       <div className={cn("relative flex max-w-[75%] flex-col", mine ? "items-end" : "items-start")}>
+        {senderLabel && <p className="mb-1 px-1 text-xs text-muted-foreground">{senderLabel}</p>}
         <div
           {...(interaction && {
             ...longPress,

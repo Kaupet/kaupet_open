@@ -189,6 +189,8 @@ export type WizardVertical = {
   beforeValidate: (groupKeys: string[]) => Promise<boolean>;
   /** Etter at siden er validert. true betyr at vertikalen selv gikk videre. */
   afterValidate: (groupKeys: string[]) => boolean;
+  /** Brukeren har forlatt en side (i hvilken som helst retning). */
+  onPageLeft: (groupKeys: string[]) => void;
 };
 
 /** Flyten til en vertikal som eier hele annonseflyten (kjøretøy:
@@ -303,7 +305,8 @@ export type Verticals = {
     currentCategoryId: string | null;
     attributes: Record<string, unknown>;
   }>;
-  /** Knapp som starter et 360°-opptak for en annonse. */
+  /** Knapp som starter et 360°-opptak for en annonse (native). Kan også
+   * monteres med `autoStart` for å starte opptaket uten knappetrykk. */
   Spin360CaptureLauncher: ComponentType<{
     listingId: string | null;
     ensureListingId?: () => Promise<string | null>;
@@ -311,6 +314,13 @@ export type Verticals = {
     label?: string;
     variant?: "outline" | "ghost";
     size?: "default" | "sm" | "icon";
+    autoStart?: boolean;
+    onDone?: () => void;
+  }>;
+  /** Web-variant på annonsevisningen: QR-kode som åpner opptaket i appen. */
+  Spin360QrPanel: ComponentType<{
+    listingId: string | null;
+    ensureListingId?: () => Promise<string | null>;
   }>;
   /** 360-bildene til en annonse, hentet parallelt med annonsen. */
   fetchListing360Frames: (kaupetCode: string) => Promise<Spin360Frame[]>;
@@ -369,6 +379,7 @@ const NO_WIZARD: WizardVertical = {
   calculatedBuyerFeeKr: null,
   beforeValidate: async () => false,
   afterValidate: () => false,
+  onPageLeft: () => {},
 };
 const noWizard = () => NO_WIZARD;
 const noHint = () => null;

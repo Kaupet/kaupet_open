@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { EDITION } from "@/lib/edition";
+
 const state = vi.hoisted(() => ({ from: vi.fn(), context: {} as unknown }));
 vi.mock("@tanstack/react-start", () => ({
   createIsomorphicFn: () => ({ server: (fn: unknown) => ({ client: () => fn }) }),
@@ -77,6 +79,33 @@ describe("blokkering", () => {
         },
       ],
     ]);
+  });
+
+  it.skipIf(EDITION === "open")("avviser blokkering av en modereringstråd", async () => {
+    const insert = vi.fn();
+    state.from.mockImplementation(() => {
+      const query = {
+        select: () => query,
+        eq: () => query,
+        maybeSingle: async () => ({
+          data: {
+            id: conversationId,
+            buyer_id: otherId,
+            seller_id: userId,
+            listing_id: "listing",
+            is_moderation: true,
+          },
+          error: null,
+        }),
+        insert,
+      };
+      return query;
+    });
+
+    await expect(
+      createBlock({ data: { targetUserId: otherId, scope: "conversation", conversationId } }),
+    ).rejects.toThrow("Modereringssamtaler kan ikke blokkeres");
+    expect(insert).not.toHaveBeenCalled();
   });
 
   it("avviser egenblokkering og samtaler utenfor brukerens deltakelse", async () => {

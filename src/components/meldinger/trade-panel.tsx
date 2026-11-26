@@ -4,6 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { ChevronRight, User as UserIcon } from "lucide-react";
 
 import { BlockConversationMenu } from "@/components/block-conversation-menu";
+import { ModerationBadge } from "@/features/moderation-threads/moderation-badge";
 import { SaleActions, type SaleActionsProps } from "@/components/meldinger/sale-panel";
 import { TradeSteps } from "@/components/meldinger/trade-steps";
 import type { TradeStep } from "@/components/meldinger/trade-step";
@@ -21,7 +22,14 @@ export type TradePanelProps = {
   priceLabel: string;
   /** Vises bare i handelspanelet på desktop; på smal skjerm står den i toppen. */
   step?: TradeStep | null;
-  other: { id: string; name: string; avatarUrl: string | null; deleted: boolean } | null;
+  other: {
+    id: string;
+    name: string;
+    avatarUrl: string | null;
+    deleted: boolean;
+    /** Offisiell moderator: aldri lenke til den private profilen. */
+    moderation?: boolean;
+  } | null;
   otherOrganization: { id: string; name: string; logoUrl: string | null } | null;
   sale: SaleActionsProps | null;
   conversationId: string;
@@ -47,7 +55,7 @@ export function TradePanel({
   const getProfileFn = useServerFn(getPublicProfile);
   const { data: profile } = useQuery({
     queryKey: ["public-profile", other?.id],
-    enabled: !!other && !other.deleted && !otherOrganization,
+    enabled: !!other && !other.deleted && !other.moderation && !otherOrganization,
     queryFn: () => getProfileFn({ data: { userId: other!.id } }),
   });
 
@@ -121,6 +129,11 @@ export function TradePanel({
             </span>
             <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           </Link>
+        ) : other?.moderation && !other.deleted ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="min-w-0 truncate font-medium">{other.name}</span>
+            <ModerationBadge />
+          </div>
         ) : other && !other.deleted ? (
           <Link
             to="/bruker/$id"

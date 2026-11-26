@@ -2,12 +2,14 @@
 import { forwardRef, useImperativeHandle, type ComponentType } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { EDITION } from "@/lib/edition";
 
 const mocks = vi.hoisted(() => ({
   search: { mode: "reset" as string, returnTo: undefined, konto: undefined as string | undefined },
   resetPasswordForEmail: vi.fn(),
   resend: vi.fn(),
+  signUp: vi.fn(),
   getResponsePromise: vi.fn(),
   reset: vi.fn(),
   site: { LEGAL_PAGES: true, AUTH_EMAIL: true },
@@ -32,6 +34,7 @@ vi.mock("@/integrations/supabase/client", () => ({
     auth: {
       resetPasswordForEmail: mocks.resetPasswordForEmail,
       resend: mocks.resend,
+      signUp: mocks.signUp,
       getUser: async () => ({ data: { user: null } }),
     },
   },
@@ -53,6 +56,15 @@ vi.mock("@/components/native-page-header", () => ({ NativePageHeader: () => null
 import { Route } from "./auth";
 const AuthPage = (Route as unknown as { options: { component: ComponentType } }).options.component;
 
+vi.stubGlobal(
+  "ResizeObserver",
+  class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  },
+);
+
 afterEach(() => {
   cleanup();
   vi.unstubAllEnvs();
@@ -63,6 +75,7 @@ beforeEach(() => {
   mocks.resend.mockReset().mockResolvedValue({ error: null });
   mocks.getResponsePromise.mockReset().mockResolvedValue("captcha-1");
   mocks.reset.mockReset();
+  mocks.signUp.mockReset().mockResolvedValue({ data: { session: null }, error: null });
   mocks.site = { LEGAL_PAGES: true, AUTH_EMAIL: true };
 });
 
@@ -133,3 +146,37 @@ it("skjuler vilkårsavkrysning og e-postlenker når de er slått av", () => {
   expect(screen.queryByRole("button", { name: "Glemt passord?" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Send bekreftelse på nytt" })).toBeNull();
 });
+
+it.each(EDITION === "open" ? [false] : [false, true])(
+  "registrerer navn med utgavens metadata og skjult etternavn: %s",
+  async (withLastName) => {
+    mocks.search.mode = "signup";
+    mocks.search.konto = undefined;
+    mocks.site.LEGAL_PAGES = false;
+    const user = userEvent.setup();
+    render(<AuthPage />);
+    await user.type(screen.getByLabelText(EDITION === "open" ? "Visningsnavn" : "Fornavn"), "Kari");
+    if (withLastName) {
+      await user.type(screen.getByLabelText("Etternavn (valgfritt)"), "Nordmann");
+      expect(
+        screen
+          .getByRole("checkbox", { name: "Vis etternavnet mitt til andre brukere" })
+          .getAttribute("aria-checked"),
+      ).toBe("false");
+    }
+    await user.type(screen.getByLabelText("E-post"), "kari@example.com");
+    await user.type(screen.getByLabelText("Passord", { exact: true }), "password12345");
+    await user.click(screen.getByRole("button", { name: "Opprett konto" }));
+    await waitFor(() => expect(mocks.signUp).toHaveBeenCalled());
+    expect(mocks.signUp.mock.calls[0][0].options.data).toEqual(
+      EDITION === "open"
+        ? { display_name: "Kari" }
+        : {
+            display_name: "Kari",
+            first_name: "Kari",
+            last_name: withLastName ? "Nordmann" : "",
+            show_last_name: false,
+          },
+    );
+  },
+);

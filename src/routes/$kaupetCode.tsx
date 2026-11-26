@@ -18,8 +18,10 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import { showSuccessToast, showErrorToast } from "@/lib/toast";
+import { spin360OwnerVariant } from "@/lib/spin-capture";
 import { z } from "zod";
 import { useIsNative } from "@/hooks/use-is-native";
+import { useFormFactor } from "@/hooks/use-form-factor";
 import { useIsAdmin, useIsModerator } from "@/hooks/use-user-roles";
 import { ListingActionsMenu } from "@/components/listing-detail/listing-actions-menu";
 
@@ -515,6 +517,8 @@ function ListingDetailPage() {
   const [plateModalOpen, setPlateModalOpen] = useState(false);
   const PlateEditDialog = verticals.ListingPlateEditDialog;
   const Spin360CaptureLauncher = verticals.Spin360CaptureLauncher;
+  const Spin360QrPanel = verticals.Spin360QrPanel;
+  const formFactor = useFormFactor();
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const { data: allFilters } = useAllCategoryFilters();
   const categoriesByIdForBehavior = useMemo(() => {
@@ -532,6 +536,13 @@ function ListingDetailPage() {
     valueGroup,
     filterCategoryBehavior(data?.category_id ?? null, allFilters ?? [], categoriesByIdForBehavior),
   );
+  const spin360Variant = spin360OwnerVariant({
+    spin360: behavior.spin360,
+    status: data?.status,
+    listingId,
+    isNative,
+    isDesktop: formFactor === "desktop",
+  });
   const { saveField, fieldStatus } = useListingEditMutations({
     listingId: listingId ?? "",
     kaupetCode,
@@ -800,7 +811,11 @@ function ListingDetailPage() {
               isFree={data.is_free}
               hasPrice={data.price_nok != null}
             />
-            {Spin360CaptureLauncher && isNative && valueGroup && listingId && (
+            {/* 360°-opptak er et eget steg utenfor opprettelsesflyten: i
+                eier-panelet på annonsevisningen, kun for spin360-kategorier og
+                utkast/aktive annonser (samme gating som i Mine annonser).
+                Native får kamera-opptak i appen; desktop-web får QR-kode. */}
+            {spin360Variant === "native-capture" && listingId && Spin360CaptureLauncher && (
               <div className="mt-3">
                 <Suspense fallback={null}>
                   <Spin360CaptureLauncher
@@ -808,6 +823,13 @@ function ListingDetailPage() {
                     listingTitle={data.title}
                     label="Legg til 360°-opptak"
                   />
+                </Suspense>
+              </div>
+            )}
+            {spin360Variant === "qr" && listingId && Spin360QrPanel && (
+              <div className="mt-3">
+                <Suspense fallback={null}>
+                  <Spin360QrPanel listingId={listingId} />
                 </Suspense>
               </div>
             )}

@@ -1,11 +1,12 @@
-﻿import { useEffect, useEffectEvent, useState } from "react";
-import { Link } from "@tanstack/react-router";
+﻿import { lazy, Suspense, useEffect, useEffectEvent, useRef, useState } from "react";
+import { CatchBoundary } from "@tanstack/react-router";
 import { ChevronDown, Sparkles } from "lucide-react";
 
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ImageUploader } from "@/components/image-uploader";
+import { NativeSheet } from "@/components/ui/native-sheet";
 
 import type { WizardSharedProps } from "../types";
 import { FieldValid } from "../field-valid";
@@ -76,6 +77,42 @@ export function TitleGroup(
   );
 }
 
+// Stabil referanse: en ny funksjon ville rullet tilbake ved hver rendering.
+function scrollToPhotoSuggestionPolicy(content: HTMLDivElement | null) {
+  content?.querySelector("#bildeforslag")?.scrollIntoView();
+}
+
+// Lastes først når skuffen åpnes, så teksten ikke tynger annonseveiviseren.
+const PhotoSuggestionPolicy = lazy(async () => {
+  const { PersonvernContent } = await import("@/components/legal/personvern-content");
+  return {
+    default: () => (
+      <div ref={scrollToPhotoSuggestionPolicy} className="px-1 pb-6">
+        <PersonvernContent />
+      </div>
+    ),
+  };
+});
+
+// En mislykket lasting (for eksempel gammel chunk etter en deploy) skal ikke ta
+// med seg skjemaet brukeren holder på med. React husker feilen, så «prøv igjen» ville ikke hjelpe.
+function PolicyLoadError() {
+  return (
+    <p role="alert" className="px-1 pb-6 text-sm">
+      Kunne ikke laste personvernerklæringen her.{" "}
+      <a
+        href="/personvern#bildeforslag"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline underline-offset-4"
+      >
+        Les den i en ny fane
+      </a>
+      .
+    </p>
+  );
+}
+
 export function PhotosGroup({
   images,
   setImages,
@@ -84,6 +121,7 @@ export function PhotosGroup({
   setValue,
   title,
   photoSuggestionEnabled,
+  photoSuggestionDisabled,
   photoSuggestionStatus,
   analyzePhotos,
   photoTitleSuggestion,
@@ -97,17 +135,47 @@ export function PhotosGroup({
   | "setValue"
   | "title"
   | "photoSuggestionEnabled"
+  | "photoSuggestionDisabled"
   | "photoSuggestionStatus"
   | "analyzePhotos"
   | "photoTitleSuggestion"
   | "applyPhotoTitleSuggestion"
 >) {
+  const [privacyOpen, setPrivacyOpen] = useState(false);
+  const scrollFrame = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    },
+    [],
+  );
+
+  function applyTitle(suggestion: string) {
+    setValue("title", suggestion, { shouldValidate: true });
+    applyPhotoTitleSuggestion(suggestion);
+    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
+    // Vent til det utfylte tittelfeltet er rendret, uten å åpne tastaturet.
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = null;
+      const field = document.getElementById("title");
+      if (!field) return;
+      const container = field.closest<HTMLElement>("[data-composer-scroll]");
+      const view = container?.getBoundingClientRect();
+      const style = container && getComputedStyle(container);
+      const top = (view?.top ?? 0) + (Number.parseFloat(style?.scrollPaddingTop ?? "0") || 0);
+      const bottom =
+        (view?.bottom ?? window.innerHeight) -
+        (Number.parseFloat(style?.scrollPaddingBottom ?? "0") || 0);
+      const rect = field.getBoundingClientRect();
+      if (rect.top >= top && rect.bottom <= bottom) return;
+      field.scrollIntoView({ block: "center", behavior: "instant" });
+    });
+  }
   // Brukeren ba om å få tittelen fylt ut: er feltet tomt, brukes forslaget
   // direkte. Har de skrevet noe selv, får de heller velge med "Bruk" under.
   const fillTitleFromSuggestion = useEffectEvent((suggestion: typeof photoTitleSuggestion) => {
     if (suggestion && !title.trim()) {
-      setValue("title", suggestion, { shouldValidate: true });
-      applyPhotoTitleSuggestion(suggestion);
+      applyTitle(suggestion);
     }
   });
   useEffect(() => {
@@ -136,6 +204,7 @@ export function PhotosGroup({
               className="native-touch-target h-12 w-full gap-2 rounded-xl border-brand/40 text-brand-text hover:text-brand-text"
               onClick={analyzePhotos}
               disabled={
+                photoSuggestionDisabled ||
                 images.length === 0 ||
                 photoSuggestionStatus === "analyzing" ||
                 photoSuggestionStatus === "verifying"
@@ -149,16 +218,39 @@ export function PhotosGroup({
               {images.length === 0 ? "Legg til minst ett bilde først. " : ""}
               Denne funksjonen benytter KI for å analysere bildene. Les mer om hvordan bildene
               behandles i{" "}
-              <Link
-                to="/personvern"
-                hash="bildeforslag"
+              <button
+                type="button"
+                onClick={() => setPrivacyOpen(true)}
                 className="underline underline-offset-4 hover:text-foreground"
               >
                 personvernerklæringen
-              </Link>
+              </button>
               .
             </p>
           </div>
+          <NativeSheet
+            open={privacyOpen}
+            onOpenChange={setPrivacyOpen}
+            title={<span className="font-display text-2xl font-medium">Personvernerklæring</span>}
+            titleVisible
+            headerClassName="mb-4 px-1 text-left"
+            expandable
+            // Fullhøyde fra start: ellers nullstiller første utvidelse rullingen til avsnittet.
+            initialSnapPoint={1}
+            className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"
+          >
+            <CatchBoundary getResetKey={() => "policy"} errorComponent={PolicyLoadError}>
+              <Suspense
+                fallback={
+                  <p role="status" className="px-1 pb-6 text-sm text-muted-foreground">
+                    Laster personvernerklæringen …
+                  </p>
+                }
+              >
+                <PhotoSuggestionPolicy />
+              </Suspense>
+            </CatchBoundary>
+          </NativeSheet>
           {photoSuggestionStatus === "analyzing" && (
             <p role="status" className="text-sm text-muted-foreground">
               Analyserer bildene …
@@ -186,8 +278,7 @@ export function PhotosGroup({
                 size="sm"
                 className="native-touch-target"
                 onClick={() => {
-                  setValue("title", photoTitleSuggestion, { shouldValidate: true });
-                  applyPhotoTitleSuggestion(photoTitleSuggestion);
+                  applyTitle(photoTitleSuggestion);
                 }}
               >
                 Bruk

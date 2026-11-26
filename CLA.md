@@ -2,9 +2,9 @@
 
 **kaupet_open — Individual Contributor License Agreement**
 
-Thank you for your interest in contributing to kaupet_open, maintained by Happy Pixel AS ("Company").
+Thank you for your interest in contributing to kaupet_open, maintained by [Happy Pixel AS](https://happypixel.no) ("Company").
 
-This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Company. By submitting a pull request or otherwise contributing to kaupet_open or any other repository owned or managed by Happy Pixel AS, you accept and agree to the following terms and conditions for your present and future contributions.
+This Contributor License Agreement ("Agreement") documents the rights granted by contributors to the Company. By submitting a pull request or otherwise contributing to kaupet_open or any other repository owned or managed by [Happy Pixel AS](https://happypixel.no), you accept and agree to the following terms and conditions for your present and future contributions.
 
 ---
 
@@ -62,4 +62,4 @@ This Agreement shall be governed by and construed in accordance with the laws of
 
 ---
 
-_This CLA is based on the Apache Individual Contributor License Agreement v2.0, adapted for kaupet_open and Happy Pixel AS._
+_This CLA is based on the Apache Individual Contributor License Agreement v2.0, adapted for kaupet_open and [Happy Pixel AS](https://happypixel.no)._

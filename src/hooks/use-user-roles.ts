@@ -34,6 +34,11 @@ export function useIsModerator() {
   return useRoleFlag((roles) => roles.includes("moderator"));
 }
 
+/** Moderatorer og administratorer: de som kan bli lagt til i en modereringssamtale. */
+export function useIsModerationStaff() {
+  return useRoleFlag((roles) => roles.includes("moderator") || roles.includes("admin"));
+}
+
 /** Demobrukere og administratorer deler de samme testflatene. */
 export function useIsDemo() {
   return useRoleFlag((roles) => roles.includes("demo") || roles.includes("admin"));

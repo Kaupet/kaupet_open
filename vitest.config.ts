@@ -12,6 +12,7 @@ export default defineConfig({
       R2_PUBLIC_BASE_URL: "https://bilder.test.invalid",
       VITE_R2_PUBLIC_BASE_URL: "https://bilder.test.invalid",
     },
+    setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     // Integration tests need a running local Supabase stack (`supabase start`)
     // and are run separately via `bun run test:rls`, not in the default suite/CI.

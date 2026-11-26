@@ -219,6 +219,7 @@ export type WizardSharedProps = WizardVerticalProps & {
   // usePhotoSuggestion() instance shared by the photos and category-
   // attributes steps — see use-photo-suggestion.ts.
   photoSuggestionEnabled: boolean;
+  photoSuggestionDisabled: boolean;
   photoSuggestionStatus:
     "idle" | "analyzing" | "verifying" | "verification-required" | "ok" | "unavailable";
   analyzePhotos: () => void;

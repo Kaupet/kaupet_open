@@ -52,3 +52,35 @@ export async function assertUserNotRateLimited(
   }
   if (!allowed) throw new ClientError(message, 429);
 }
+
+/** Refunds one attempt counted by assertUserNotRateLimited when the write it
+ * guarded failed, so failed writes do not use up the quota. Refunds are capped
+ * by the `<bucket>_refund` rule, so a client repeating failing writes is still
+ * throttled; without that rule nothing is refunded. Best effort: a failed
+ * refund must not hide the original error. */
+export async function releaseUserRateLimit(userId: string, bucket: string): Promise<void> {
+  try {
+    ruleFor(bucket);
+    const refundBucket = `${bucket}_refund`;
+    const { limit, windowSeconds } = ruleFor(refundBucket);
+    const supabaseAdmin = await getSupabaseAdmin();
+    const { data: allowed, error: capError } = await supabaseAdmin.rpc("check_user_rate_limit", {
+      _bucket: refundBucket,
+      _user_id: userId,
+      _limit: limit,
+      _window_seconds: windowSeconds,
+    });
+    if (capError) {
+      console.error("release_user_rate_limit", capError.message);
+      return;
+    }
+    if (!allowed) return;
+    const { error } = await supabaseAdmin.rpc("release_user_rate_limit", {
+      _bucket: bucket,
+      _user_id: userId,
+    });
+    if (error) console.error("release_user_rate_limit", error.message);
+  } catch (error) {
+    console.error("release_user_rate_limit", error);
+  }
+}

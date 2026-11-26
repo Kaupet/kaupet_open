@@ -3,6 +3,14 @@ export async function conversationOrganizations(_ids: (string | null | undefined
   return new Map<string, { name: string; avatarUrl: string | null }>();
 }
 
+export async function hasOrganizationChatAccess(
+  _listing: object | null | undefined,
+  _sellerId: string,
+  _userId: string,
+): Promise<boolean> {
+  return false;
+}
+
 export async function withOrganizationSellers<
   Row extends {
     seller_id: string;

@@ -1,7 +1,7 @@
 import { hasBusinessAccount } from "@/lib/business-auth";
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { FormProvider, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { showSuccessToast, showErrorToast } from "@/lib/toast";
@@ -33,6 +33,9 @@ import { emailSchema, passwordSchema } from "@/lib/auth-schemas";
 import { authConfirmationRedirect, postAuthDestination, safeReturnTo } from "@/lib/auth-return";
 import { AUTH_EMAIL, LEGAL_PAGES, SITE_NAME, SITE_SHORT_NAME, SITE_URL } from "@/lib/site";
 
+import { ProfileNameFields } from "@/components/profile-name-fields";
+import { profileSignupNameSchema, profileSignupMetadata } from "@/lib/profile-name";
+
 const TERMS_VERSION = "2.0";
 
 const searchSchema = z.object({
@@ -56,17 +59,19 @@ export const Route = createFileRoute("/auth")({
 type AuthMode = "signin" | "signup" | "reset" | "resend" | "confirm";
 
 const signInSchema = z.object({
-  displayName: z.string().optional(),
+  firstName: z.string(),
+  lastName: z.string(),
+  showLastName: z.boolean(),
   email: emailSchema,
   // Only checks presence here — the account may have been created back when
   // a shorter password was allowed, so this must never reject a legitimate
   // existing password. Actual correctness is checked server-side.
   password: z.string().min(1, "Skriv inn passordet ditt"),
-  acceptedTerms: z.boolean().optional(),
+  acceptedTerms: z.boolean(),
 });
 
-const signUpSchema = signInSchema.extend({
-  displayName: z.string().trim().max(50, "Maks 50 tegn").optional().or(z.literal("")),
+const signUpSchema = profileSignupNameSchema.safeExtend({
+  email: emailSchema,
   password: passwordSchema,
   acceptedTerms: z.boolean().refine((v) => v || !LEGAL_PAGES, {
     message:
@@ -74,7 +79,7 @@ const signUpSchema = signInSchema.extend({
   }),
 });
 
-type AuthForm = z.infer<typeof signInSchema>;
+type AuthForm = z.infer<typeof signUpSchema>;
 
 type LegalDoc = "vilkar" | BusinessLegalDoc;
 
@@ -168,6 +173,18 @@ function AuthPage() {
   }, [finishAuth]);
 
   const resolver = useMemo(() => zodResolver(isSignUp ? signUpSchema : signInSchema), [isSignUp]);
+  const form = useForm<AuthForm>({
+    resolver,
+    mode: "onTouched",
+    defaultValues: {
+      firstName: "",
+      lastName: "",
+      showLastName: false,
+      email: "",
+      password: "",
+      acceptedTerms: false,
+    },
+  });
   const {
     register,
     handleSubmit,
@@ -177,11 +194,7 @@ function AuthPage() {
     trigger,
     clearErrors,
     formState: { errors },
-  } = useForm<AuthForm>({
-    resolver,
-    mode: "onTouched",
-    defaultValues: { displayName: "", email: "", password: "", acceptedTerms: false },
-  });
+  } = form;
 
   const [password = "", acceptedTerms = false] = useWatch({
     control,
@@ -277,7 +290,7 @@ function AuthPage() {
             emailRedirectTo: authConfirmationRedirect(returnTo, webOrigin()),
             captchaToken: turnstileToken,
             data: {
-              display_name: values.displayName || values.email.split("@")[0],
+              ...profileSignupMetadata(values, values.email),
               ...(LEGAL_PAGES && {
                 terms_accepted_version: TERMS_VERSION,
                 terms_accepted_at: new Date().toISOString(),
@@ -496,22 +509,9 @@ function AuthPage() {
               noValidate
             >
               {isSignUp && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="name">Visningsnavn</Label>
-                  <Input
-                    id="name"
-                    autoComplete="name"
-                    placeholder="Kari Nordmann"
-                    aria-invalid={!!errors.displayName}
-                    aria-describedby={errors.displayName ? "name-error" : undefined}
-                    {...register("displayName")}
-                  />
-                  {errors.displayName && (
-                    <p id="name-error" className="text-sm text-destructive">
-                      {errors.displayName.message}
-                    </p>
-                  )}
-                </div>
+                <FormProvider {...form}>
+                  <ProfileNameFields />
+                </FormProvider>
               )}
               <div className="space-y-1.5">
                 <Label htmlFor="email">E-post</Label>

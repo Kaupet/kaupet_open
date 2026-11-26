@@ -139,6 +139,7 @@ export function Price({
               // har en verdi — et "0" i et tomt felt ser ut som en pris.
               placeholder={heroSize ? "0" : undefined}
               disabled={isFree}
+              data-unit-suffix
               className={
                 heroSize
                   ? "h-16 w-full pr-12 text-right text-4xl font-semibold"

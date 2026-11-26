@@ -1,3 +1,13 @@
+import {
+  INBOX_MEMBER_COLUMNS,
+  INBOX_RELATION,
+  moderationThreadName,
+  queryModerationInbox,
+  useMyModeratorAlias,
+  type ModerationInboxFields,
+  type ModerationInboxMember,
+} from "@/features/moderation-threads";
+import { ModerationBadge } from "@/features/moderation-threads/moderation-badge";
 import { conversationOrganizations } from "@/lib/conversation-organizations";
 import { LISTING_ORGANIZATION_COLUMN, listingOrganizationId } from "@/lib/listing-business-data";
 import { Link } from "@tanstack/react-router";
@@ -21,6 +31,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 
 type ConvPreview = {
+  moderation_member?: ModerationInboxMember;
   id: string;
   listing_id: string | null;
   listing_title: string | null;
@@ -30,32 +41,24 @@ type ConvPreview = {
   buyer_last_read_at: string | null;
   seller_last_read_at: string | null;
   other_name: string | null;
+  moderation_sender: boolean;
   last_message_body: string | null;
   last_message_sender_id: string | null;
 };
 
-type RawProfile = { id: string; display_name: string; avatar_url: string | null };
+type RawProfile = {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+  deleted_at?: string | null;
+};
 type RawListing = { title: string };
 
 async function fetchConversationPreviews(userId: string): Promise<ConvPreview[]> {
-  // Try with FK alias joins first
-  const { data: convs, error } = await supabase
-    .from("conversations")
-    .select(
-      `id, buyer_id, seller_id, listing_id, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
-       listing:listings(title${LISTING_ORGANIZATION_COLUMN}),
-       buyer:profiles!conversations_buyer_id_fkey(id, display_name, avatar_url),
-       seller:profiles!conversations_seller_id_fkey(id, display_name, avatar_url)`,
-    )
-    .or(
-      `and(buyer_id.eq.${userId},buyer_deleted_at.is.null),and(seller_id.eq.${userId},seller_deleted_at.is.null)`,
-    )
-    .order("last_message_at", { ascending: false })
-    .limit(8);
-
-  type RawConv = {
+  type RawConv = ModerationInboxFields & {
     id: string;
     buyer_id: string;
+    is_moderation?: boolean;
     seller_id: string;
     listing_id: string | null;
     last_message_at: string;
@@ -66,27 +69,45 @@ async function fetchConversationPreviews(userId: string): Promise<ConvPreview[]>
     seller?: RawProfile | RawProfile[] | null;
   };
 
+  // Try with FK alias joins first
+  const { data: convs, error } = await queryModerationInbox<RawConv>(userId, false, (filter) =>
+    supabase
+      .from(INBOX_RELATION)
+      .select(
+        `id${INBOX_MEMBER_COLUMNS}, buyer_id, seller_id, listing_id, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
+       listing:listings(title${LISTING_ORGANIZATION_COLUMN}),
+       buyer:profiles!conversations_buyer_id_fkey(id, display_name, avatar_url, deleted_at),
+       seller:profiles!conversations_seller_id_fkey(id, display_name, avatar_url)`,
+      )
+      .or(filter)
+      .order("last_message_at", { ascending: false })
+      .limit(8),
+  );
+
   let rows: RawConv[];
 
   if (error) {
     // Fallback: fetch profiles separately
-    const { data: simpleConvs, error: e2 } = await supabase
-      .from("conversations")
-      .select(
-        `id, buyer_id, seller_id, listing_id, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
+    const { data: simpleConvs, error: e2 } = await queryModerationInbox<RawConv>(
+      userId,
+      false,
+      (filter) =>
+        supabase
+          .from(INBOX_RELATION)
+          .select(
+            `id${INBOX_MEMBER_COLUMNS}, buyer_id, seller_id, listing_id, last_message_at, buyer_last_read_at, seller_last_read_at, buyer_deleted_at, seller_deleted_at,
          listing:listings(title${LISTING_ORGANIZATION_COLUMN})`,
-      )
-      .or(
-        `and(buyer_id.eq.${userId},buyer_deleted_at.is.null),and(seller_id.eq.${userId},seller_deleted_at.is.null)`,
-      )
-      .order("last_message_at", { ascending: false })
-      .limit(8);
+          )
+          .or(filter)
+          .order("last_message_at", { ascending: false })
+          .limit(8),
+    );
     if (e2) throw e2;
-    const rawSimple = (simpleConvs ?? []) as unknown as RawConv[];
+    const rawSimple = simpleConvs.slice(0, 8);
     const profileIds = Array.from(new Set(rawSimple.flatMap((c) => [c.buyer_id, c.seller_id])));
     const { data: profiles } = await supabase
       .from("profiles")
-      .select("id, display_name, avatar_url")
+      .select("id, display_name, avatar_url, deleted_at")
       .in("id", profileIds);
     const pmap = new Map((profiles ?? []).map((p) => [p.id, p]));
     rows = rawSimple.map((c) => ({
@@ -95,7 +116,7 @@ async function fetchConversationPreviews(userId: string): Promise<ConvPreview[]>
       seller: pmap.get(c.seller_id) ?? null,
     }));
   } else {
-    rows = (convs ?? []) as unknown as RawConv[];
+    rows = convs.slice(0, 8);
   }
 
   if (rows.length === 0) return [];
@@ -121,6 +142,13 @@ async function fetchConversationPreviews(userId: string): Promise<ConvPreview[]>
     const lm = lastMsg.get(c.id);
     return {
       id: c.id,
+      moderation_member: c.moderation_user_id
+        ? {
+            conversation_id: c.id,
+            last_read_at: c.moderation_last_read_at ?? null,
+            deleted_at: c.moderation_deleted_at ?? null,
+          }
+        : undefined,
       listing_id: c.listing_id,
       listing_title: (listing as RawListing | null)?.title ?? null,
       buyer_id: c.buyer_id,
@@ -129,9 +157,12 @@ async function fetchConversationPreviews(userId: string): Promise<ConvPreview[]>
       buyer_last_read_at: c.buyer_last_read_at,
       seller_last_read_at: c.seller_last_read_at,
       other_name:
-        userId !== c.seller_id && organizationId
-          ? (organizations.get(organizationId)?.name ?? "Bedrift")
-          : ((other as RawProfile | null)?.display_name ?? null),
+        c.is_moderation && !c.moderation_user_id
+          ? moderationThreadName()
+          : userId !== c.seller_id && organizationId
+            ? (organizations.get(organizationId)?.name ?? "Bedrift")
+            : (other?.display_name ?? null),
+      moderation_sender: !!c.is_moderation && !c.moderation_user_id,
       last_message_body: lm ? messagePreview(lm) : null,
       last_message_sender_id: lm?.sender_id ?? null,
     };
@@ -139,6 +170,7 @@ async function fetchConversationPreviews(userId: string): Promise<ConvPreview[]>
 }
 
 export function MessagesButton({ isActive }: { isActive?: boolean } = {}) {
+  const moderatorAlias = useMyModeratorAlias();
   const { user } = useAuth();
   const qc = useQueryClient();
   const native = useIsNative();
@@ -246,15 +278,20 @@ export function MessagesButton({ isActive }: { isActive?: boolean } = {}) {
         ) : (
           <ul className="divide-y divide-border">
             {conversations.map((c) => {
-              const myLastReadAt =
-                c.buyer_id === user.id ? c.buyer_last_read_at : c.seller_last_read_at;
+              const myLastReadAt = c.moderation_member
+                ? c.moderation_member.last_read_at
+                : c.buyer_id === user.id
+                  ? c.buyer_last_read_at
+                  : c.seller_last_read_at;
               const unread = isUnread(
                 c.last_message_at,
                 c.last_message_sender_id,
                 user.id,
                 myLastReadAt,
               );
-              const lastFromMe = c.last_message_sender_id === user.id;
+              const lastFromMe =
+                c.last_message_sender_id === user.id ||
+                (!!moderatorAlias && c.last_message_sender_id === moderatorAlias);
               return (
                 <li key={c.id} className={unread ? "bg-primary/5" : ""}>
                   <Link
@@ -288,6 +325,7 @@ export function MessagesButton({ isActive }: { isActive?: boolean } = {}) {
                           }
                         >
                           {c.other_name ?? "Ukjent bruker"}
+                          {c.moderation_sender && <ModerationBadge />}
                         </p>
                         <p
                           className={

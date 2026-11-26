@@ -3,6 +3,7 @@ import { BrandWordmark } from "@/components/brand-mark";
 import { ChevronLeft, Eye, X } from "lucide-react";
 
 import { NativePageHeader } from "@/components/native-page-header";
+import { useKeyboardVisible } from "@/hooks/use-keyboard-visible";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -86,10 +87,24 @@ export function ListingComposerShell({
   const previewFrameRef = useRef<HTMLDivElement>(null);
   const lastEditAtRef = useRef(0);
   const [previewOpen, setPreviewOpen] = useState(false);
-  // Native: når kortet er scrollet flytter fremdriftsviseren opp i headeren
-  // (i stedet for tittelen), så lave skjermer får mer plass til skjemaet.
-  const [scrolled, setScrolled] = useState(false);
-  const progressInHeader = native && scrolled && !!progress;
+  // Native: mens tastaturet er åpe skjules header, fremdrift og bunnlinje
+  // (CSS på data-keyboard-open), ellers står feltet man skriver i bak dem.
+  const keyboardOpen = useKeyboardVisible() && native;
+  // Native: fremdrift og kategoristi står fast i headeren (i stedet for
+  // tittelen). De flyttet seg tidligere dit ved scroll, men da vokste kortet
+  // brått oppover og innholdet hoppet.
+  const progressInHeader = native && !!progress;
+  const categoryCrumb = onEditCategory ? (
+    <button
+      type="button"
+      onClick={onEditCategory}
+      className="underline decoration-dotted underline-offset-4 hover:decoration-solid"
+    >
+      {categoryLabel}
+    </button>
+  ) : (
+    categoryLabel
+  );
   const [dismissedValidationAttempt, setDismissedValidationAttempt] = useState(0);
   const showValidationFeedback =
     native &&
@@ -112,9 +127,18 @@ export function ListingComposerShell({
         !field.matches("input, textarea, select, [contenteditable='true']")
       )
         return;
-      field.scrollIntoView({
+      // Felt som fyller kortet (beskrivelsen) markerer seksjonen sin med
+      // data-scroll-anchor og legges øverst, med etiketten synlig. Skallet er
+      // eneste kilde til scrolling her, så fokus og tastatur gir én bevegelse.
+      const anchor = field.closest<HTMLElement>("[data-scroll-anchor]");
+      const toAnchor = !!anchor && container.contains(anchor);
+      const target = toAnchor ? anchor : field;
+      // Fokus, tastatur og visualViewport-resize kan alle trigge her i hver
+      // sin frame. Står målet allerede riktig, gir en ny scroll bare rykk.
+      if (isScrolledIntoPlace(target, container, toAnchor ? "start" : "visible")) return;
+      target.scrollIntoView({
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-        block: "center",
+        block: toAnchor ? "start" : "center",
       });
     });
   }, [native]);
@@ -151,6 +175,13 @@ export function ListingComposerShell({
       if (focusFrameRef.current !== null) cancelAnimationFrame(focusFrameRef.current);
     };
   }, [ensureFocusedFieldVisible, native, pageKey]);
+
+  // Når tastaturet åpnes skjules header og bunnlinje (data-keyboard-open), og
+  // kortet endrer høyde uten nødvendigvis en visualViewport-resize. En ny
+  // smooth scroll midt i en pågående retter seg mot det nye målet.
+  useEffect(() => {
+    if (keyboardOpen) ensureFocusedFieldVisible();
+  }, [ensureFocusedFieldVisible, keyboardOpen]);
 
   // Scroller telefonrammen (ikke siden) til delen av annonsen steget
   // redigerer. Rammen er display:none under 1100 px — da er alle mål 0 og
@@ -199,6 +230,7 @@ export function ListingComposerShell({
         "mx-auto w-full max-w-[1120px] px-4 pt-6 pb-4",
         native && "native-composer-shell flex flex-col",
       )}
+      data-keyboard-open={keyboardOpen || undefined}
     >
       {!native && (
         <div className="sticky top-0 z-40 -mx-4 -mt-6 mb-4 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-4 pt-safe backdrop-blur">
@@ -232,52 +264,54 @@ export function ListingComposerShell({
           </div>
         </div>
       )}
-      <NativePageHeader
-        title={title || "Ny annonse"}
-        backLabel={backLabel}
-        onBack={onBack}
-        hideBack={native}
-        center={progressInHeader ? progress : undefined}
-        right={
-          native ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={onCancel}
-              className="native-touch-target"
-              aria-label="Avbryt annonseopprettelse"
-            >
-              <X className="size-5" aria-hidden />
-            </Button>
-          ) : undefined
-        }
-      />
+      <div data-composer-chrome className="contents">
+        <NativePageHeader
+          title={title || "Ny annonse"}
+          backLabel={backLabel}
+          onBack={onBack}
+          hideBack={native}
+          center={
+            progressInHeader ? (
+              <div className="py-2">
+                {progress}
+                {categoryLabel && (
+                  <p className="mt-1 truncate text-xs text-muted-foreground">{categoryCrumb}</p>
+                )}
+              </div>
+            ) : undefined
+          }
+          right={
+            native ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={onCancel}
+                className="native-touch-target"
+                aria-label="Avbryt annonseopprettelse"
+              >
+                <X className="size-5" aria-hidden />
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
       {!native && <ComposerHeading title={title} onTitleChange={onTitleChange} />}
-      {categoryLabel && (
-        <p className="mt-1 text-sm text-muted-foreground">
-          {onEditCategory ? (
-            <button
-              type="button"
-              onClick={onEditCategory}
-              className="underline decoration-dotted underline-offset-4 hover:decoration-solid"
-            >
-              {categoryLabel}
-            </button>
-          ) : (
-            categoryLabel
-          )}
+      {categoryLabel && !progressInHeader && (
+        <p data-composer-chrome className="mt-1 text-sm text-muted-foreground">
+          {categoryCrumb}
         </p>
       )}
-      {notice}
+      {notice && (
+        <div data-composer-chrome className="contents">
+          {notice}
+        </div>
+      )}
 
       {((progress && !progressInHeader) || showToolbar) && (
         <div
-          className={cn(
-            "sticky top-[var(--site-header-h)] z-10 -mx-4 mt-4 border-b border-border bg-background/95 px-4 py-3 backdrop-blur",
-            native &&
-              "animate-in fade-in slide-in-from-top-2 duration-200 motion-reduce:animate-none",
-          )}
+          data-composer-chrome
+          className="sticky top-[var(--site-header-h)] z-10 -mx-4 mt-4 border-b border-border bg-background/95 px-4 py-3 backdrop-blur"
         >
           {progress}
           {showToolbar && (
@@ -335,7 +369,8 @@ export function ListingComposerShell({
             data-testid={`composer-page-${pageKey}`}
             aria-invalid={showValidationFeedback || undefined}
             className={cn(
-              "mt-8 rounded-2xl pb-24",
+              "rounded-2xl pb-24",
+              native ? "mt-4" : "mt-8",
               native &&
                 "native-composer-card overflow-y-auto overscroll-contain border border-border bg-card",
               showValidationFeedback &&
@@ -344,7 +379,6 @@ export function ListingComposerShell({
                   : "composer-validation-error-odd"),
               contentClassName,
             )}
-            onScroll={native ? (e) => setScrolled(e.currentTarget.scrollTop > 0) : undefined}
             onAnimationEndCapture={() => {
               setDismissedValidationAttempt(validationAttempt);
             }}
@@ -388,7 +422,9 @@ export function ListingComposerShell({
                   tabIndex={firstStep || !onBack ? -1 : undefined}
                 >
                   <ChevronLeft className="size-5" aria-hidden />
-                  Forrige
+                  {/* Skjules visuelt i landskapskolonnen (styles.css), der
+                      knappen er en ikonknapp ved siden av Fortsett. */}
+                  <span data-composer-back-label>Forrige</span>
                 </Button>
                 <div className="min-w-0 justify-self-end">{footer}</div>
               </div>
@@ -440,6 +476,32 @@ function scrollPreviewFrame(frame: HTMLElement, target: HTMLElement, block: "sta
     top: frame.scrollTop + delta,
     behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
   });
+}
+
+/**
+ * Om `target` allerede står der fokus-scrollingen ville lagt det i kortet:
+ * `start` er toppen av synsfeltet (etter scroll-padding), `visible` er helt
+ * synlig (med feltets scroll-margin). Et kort uten høyde (skjult, eller
+ * jsdom) regnes som ikke på plass, så scrollingen skjer som før.
+ */
+function isScrolledIntoPlace(
+  target: HTMLElement,
+  container: HTMLElement,
+  mode: "start" | "visible",
+) {
+  const view = container.getBoundingClientRect();
+  if (view.height === 0) return false;
+  const rect = target.getBoundingClientRect();
+  const px = (value: string) => Number.parseFloat(value) || 0;
+  const containerStyle = getComputedStyle(container);
+  const top = view.top + px(containerStyle.scrollPaddingTop);
+  if (mode === "start") return Math.abs(rect.top - top) < 2;
+  const targetStyle = getComputedStyle(target);
+  const bottom = view.bottom - px(containerStyle.scrollPaddingBottom);
+  return (
+    rect.top - px(targetStyle.scrollMarginTop) >= top &&
+    rect.bottom + px(targetStyle.scrollMarginBottom) <= bottom
+  );
 }
 
 /**

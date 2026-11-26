@@ -29,8 +29,8 @@ I have read the CLA Document and I hereby sign the CLA
 
 Kommenter `recheck` for å sjekke på nytt.
 
-Avtalen gir Happy Pixel AS rett til å bruke bidraget ditt, også under andre
-lisensvilkår enn AGPL-3.0 og i andre produkter og tjenester Happy Pixel AS
+Avtalen gir [Happy Pixel AS](https://happypixel.no) rett til å bruke bidraget ditt, også under andre
+lisensvilkår enn AGPL-3.0 og i andre produkter og tjenester [Happy Pixel AS](https://happypixel.no)
 utvikler. kaupet_open selv er fortsatt AGPL-3.0.
 
 Alle som står som forfatter eller medforfatter (`Co-Authored-By`) på en

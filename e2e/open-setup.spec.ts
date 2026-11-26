@@ -28,10 +28,14 @@ test("ny installasjon oppretter første admin gjennom oppstartsveiviseren", asyn
   await page.getByRole("button", { name: "Neste", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Layout", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Neste", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Mobilapp", exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: "Ja, ta med appoppsett og byggeguide" }).check();
+  await page.getByRole("button", { name: "Neste", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Vilkår og personvern" })).toBeVisible();
   await page.getByRole("button", { name: "Neste", exact: true }).click();
   await page.getByRole("button", { name: "Fullfør oppsettet" }).click();
   await expect(page.getByRole("heading", { name: "Nesten ferdig" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bygg mobilappen" })).toBeVisible();
   const { data: roles, error: roleError } = await admin
     .from("user_roles")
     .select("user_id")
@@ -41,4 +45,13 @@ test("ny installasjon oppretter første admin gjennom oppstartsveiviseren", asyn
   await page.goto("/");
   await expect(page.getByRole("searchbox", { name: "Søk i annonser" })).toBeVisible();
   await expect(page.getByText("Oppstartsveiviser", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Bunnavigasjon" })).toHaveCount(0);
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.goto("/?forcenative");
+  const tabs = page.getByRole("navigation", { name: "Bunnavigasjon" });
+  await expect(tabs.getByRole("link", { name: "Hjem" })).toHaveAttribute("aria-current", "page");
+  await tabs.getByRole("link", { name: "Søk" }).click();
+  await expect(page).toHaveURL(/\/annonser(?:\?|$)/);
+  await expect(tabs.getByRole("link", { name: "Søk" })).toHaveAttribute("aria-current", "page");
 });

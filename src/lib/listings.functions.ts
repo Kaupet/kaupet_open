@@ -31,7 +31,7 @@ import {
 } from "@/lib/category-filters";
 import { getCategoryBehavior, type CategoryBehavior } from "@/lib/category-behavior";
 import { equipmentFilterKeys, normalizeCompoundAttributes, verticals } from "@/lib/verticals";
-import { assertUserNotRateLimited } from "@/lib/rate-limit.server";
+import { assertUserNotRateLimited, releaseUserRateLimit } from "@/lib/rate-limit.server";
 import {
   effectiveFlowForCategory,
   type CategoryFlowRow,
@@ -88,6 +88,11 @@ async function authorizeListingMutation(
 
 async function assertListingCreationAllowed(userId: string, message: string) {
   await assertUserNotRateLimited(userId, "listing_creation", message);
+}
+
+/** En opprettelse som feilet etter grensesjekken skal ikke bruke av kvoten. */
+async function releaseListingCreation(userId: string) {
+  await releaseUserRateLimit(userId, "listing_creation");
 }
 
 /** Vertikalens kontroll av sitt sammensatte attributt (CompoundAttribute),
@@ -290,6 +295,9 @@ export const saveDraftListing = createServerFn({ method: "POST" })
         expected_user_id: z.guid().optional(),
         ...listingOwnershipInputShape,
         id: z.guid().optional(),
+        /** Klientens ID for et nytt utkast, så et nytt forsøk etter tapt svar
+         * oppdaterer raden i stedet for å opprette en ny. */
+        new_id: z.guid().optional(),
         expected_updated_at: z.string().datetime({ offset: true }).optional(),
         title: z.string().trim().min(1).max(120),
         subtitle: z.string().trim().max(80).nullable().optional(),
@@ -343,8 +351,19 @@ export const saveDraftListing = createServerFn({ method: "POST" })
       ...(data.attributes !== undefined && { attributes: data.attributes }),
     };
 
-    if (data.id) {
-      const existing = await authorizeListingMutation(supabaseAdmin, userId, data.id);
+    let id = data.id;
+    if (!id && data.new_id) {
+      const { data: retried, error } = await supabaseAdmin
+        .from("listings")
+        .select("id")
+        .eq("id", data.new_id)
+        .maybeSingle();
+      if (error) throw await toClientError("database", error);
+      id = retried?.id;
+    }
+
+    if (id) {
+      const existing = await authorizeListingMutation(supabaseAdmin, userId, id);
       assertDraftOwner(data, existing);
       // A lost publish response must not turn the active listing back into a draft.
       if (existing.status === "active") {
@@ -369,7 +388,7 @@ export const saveDraftListing = createServerFn({ method: "POST" })
           ...ownerPatch,
           draft_expiry_notified_at: null,
         })
-        .eq("id", data.id)
+        .eq("id", id)
         .eq("status", "draft");
       // No local version to check against yet (e.g. a draft saved before
       // version tracking existed) — update unconditionally instead of
@@ -381,10 +400,10 @@ export const saveDraftListing = createServerFn({ method: "POST" })
         .select("id, kaupet_code, updated_at")
         .maybeSingle();
       if (error) {
-        throw await toClientError("saveDraftListing.update", error, { listing_id: data.id });
+        throw await toClientError("saveDraftListing.update", error, { listing_id: id });
       }
       if (!updated) {
-        const latest = await authorizeListingMutation(supabaseAdmin, userId, data.id);
+        const latest = await authorizeListingMutation(supabaseAdmin, userId, id);
         return { conflict: true as const, updated_at: latest.updated_at };
       }
       return {
@@ -400,6 +419,7 @@ export const saveDraftListing = createServerFn({ method: "POST" })
     const { data: listing, error } = await supabaseAdmin
       .from("listings")
       .insert({
+        ...(data.new_id && { id: data.new_id }),
         ...owner,
         status: "draft",
         ...fields,
@@ -407,6 +427,7 @@ export const saveDraftListing = createServerFn({ method: "POST" })
       .select("id, kaupet_code, updated_at")
       .single();
     if (error) {
+      await releaseListingCreation(userId);
       throw await toClientError("database", error);
     }
     return {
@@ -615,6 +636,7 @@ export const createListing = createServerFn({ method: "POST" })
       .select("id, kaupet_code")
       .single();
     if (error) {
+      await releaseListingCreation(userId);
       throw await toClientError("database", error);
     }
     return { id: listing.id as string, kaupet_code: listing.kaupet_code as string };
@@ -670,6 +692,9 @@ export const republishListing = createServerFn({ method: "POST" })
       .eq("updated_at", listing.updated_at)
       .select("id, status, published_at, expires_at")
       .maybeSingle();
+    if ((error || !updated) && listing.status !== "draft") {
+      await releaseListingCreation(userId);
+    }
     if (error) {
       throw await toClientError("republishListing.update", error, { listing_id: data.id });
     }

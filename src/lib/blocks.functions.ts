@@ -1,3 +1,7 @@
+import {
+  isModerationConversation,
+  MODERATION_CONVERSATION_COLUMN,
+} from "@/features/moderation-threads";
 import { ClientError, toClientError } from "@/lib/to-client-error";
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
@@ -44,13 +48,20 @@ export const createBlock = createServerFn({ method: "POST" })
       }
       const { data: conv, error: convErr } = await supabase
         .from("conversations")
-        .select("id, buyer_id, seller_id, listing_id")
+        .select(`id, buyer_id, seller_id, listing_id${MODERATION_CONVERSATION_COLUMN}`)
         .eq("id", data.conversationId)
         .maybeSingle();
       if (convErr) {
         throw await toClientError("database", convErr);
       }
       if (!conv) throw new ClientError("Samtalen finnes ikke", 404);
+      // Selgeren skal ikke kunne stenge seg ute fra modereringsdialogen.
+      if (isModerationConversation(conv)) {
+        throw new ClientError(
+          "Modereringssamtaler kan ikke blokkeres. Rapporter meldingen i stedet.",
+          400,
+        );
+      }
       if (conv.buyer_id !== userId && conv.seller_id !== userId) {
         throw new ClientError("Du er ikke deltaker i denne samtalen", 403);
       }

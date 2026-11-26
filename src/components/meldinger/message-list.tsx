@@ -38,6 +38,8 @@ export function renderWithDayDividers(
   otherLastReadAt?: string | null,
   attachmentUrls?: Record<string, string>,
   interaction?: MessageInteraction,
+  /** Avsendernavn der samtalens toppfelt ikke forteller hvem som skrev. */
+  senderLabel?: (m: Message) => string | null,
 ) {
   const out: React.ReactElement[] = [];
   let lastDay = "";
@@ -75,6 +77,7 @@ export function renderWithDayDividers(
           myId={myId}
           startsGroup={startsGroup}
           lastInGroup={lastInGroup}
+          senderLabel={startsGroup && !mine ? senderLabel?.(m) : null}
           attachmentUrl={
             m.attachmentPreviewUrl ??
             (m.attachment_path ? attachmentUrls?.[m.attachment_path] : undefined)
